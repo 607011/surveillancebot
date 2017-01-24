@@ -21,9 +21,12 @@ from telepot.delegate import per_chat_id, create_open, pave_event_space
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from PIL import Image
+from tempfile import mkstemp
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
+
     def __init__(self, *args, **kwargs):
         super(FileSystemEventHandler, self).__init__()
         self.bot = kwargs["bot"]
@@ -31,6 +34,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.image_folder = kwargs["image_folder"]
         self.authorized_users = kwargs["authorized_users"]
         self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
+        self.max_photo_size = kwargs["max_photo_size"]
 
     def dispatch(self, event):
         if event.event_type == "created" and not event.is_directory:
@@ -46,17 +50,32 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         for user in self.authorized_users:
             pass
 
-    def send_photo(self, photo_filename):
+    def send_photo(self, src_photo_filename):
+        while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
+            time.sleep(0.1)
+        dst_photo_filename = src_photo_filename
+        if self.max_photo_size:
+            im = Image.open(src_photo_filename)
+            if im.width > self.max_photo_size or im.height > self.max_photo_size:
+                im.thumbnail((self.max_photo_size, self.max_photo_size), Image.BILINEAR)
+                handle, dst_photo_filename = mkstemp(prefix="smarthomebot-", suffix=".jpg")
+                if self.verbose:
+                    print("resizing photo to {} ...".format(dst_photo_filename))
+                im.save(dst_photo_filename, format="JPEG", quality=87)
+                os.remove(src_photo_filename)
+            im.close()
         for user in self.authorized_users:
             if self.verbose:
-                print("Sending photo {} ...".format(photo_filename))
-            while os.stat(photo_filename).st_size == 0: # make sure file is written
-                time.sleep(0.1)
-            self.bot.sendPhoto(user, open(photo_filename, "rb"),
+                print("Sending photo {} ...".format(dst_photo_filename))
+            self.bot.sendPhoto(user, open(dst_photo_filename, "rb"),
                                caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-            os.remove(photo_filename)
+        os.remove(dst_photo_filename)
 
     def send_video(self, src_video_filename):
+        if self.path_to_ffmpeg is None:
+            if self.verbose:
+                print("No path to ffmpeg given. Cannot send videos.")
+            return
         for user in self.authorized_users:
             if self.verbose:
                 print("Sending video {} ...".format(src_video_filename))
@@ -64,6 +83,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 time.sleep(0.1)
             filename, ext = os.path.splitext(os.path.basename(src_video_filename))
             dst_video_filename = "{}/{}-converted{}".format(os.path.dirname(src_video_filename), filename, ".mp4")
+            # TODO: restraint video to max size 480x320; H.264 and MPEG-4 should be used as the codec and container.
             subprocess.run(
                 [self.path_to_ffmpeg,
                  "-y",
@@ -138,8 +158,9 @@ def main(arg):
     timeout_secs = 10
     image_folder = "/home/ftp-upload"
     authorized_users = ChatUser.AUTHORIZED_USERS
-    path_to_ffmpeg = "/Users/ola/Workspace/smarthomebot/ffmpeg"
+    path_to_ffmpeg = None
     verbose = False
+    max_photo_size = 1280
 
     with open("smarthomebot-config.json", "r") as config_file:
         config = json.load(config_file)
@@ -158,6 +179,8 @@ def main(arg):
         path_to_ffmpeg = config["path_to_ffmpeg"]
     if "verbose" in config.keys():
         verbose = config["verbose"]
+    if "max_photo_size" in config.keys():
+        max_photo_size = config["max_photo_size"]
 
     bot = telepot.DelegatorBot(telegram_bot_token, [
       pave_event_space()(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
@@ -169,6 +192,7 @@ def main(arg):
                                                 verbose=verbose,
                                                 authorized_users=authorized_users,
                                                 path_to_ffmpeg=path_to_ffmpeg,
+                                                max_photo_size=max_photo_size,
                                                 bot=bot)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=False)
