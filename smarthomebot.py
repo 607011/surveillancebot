@@ -30,13 +30,15 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.verbose = kwargs["verbose"]
         self.image_folder = kwargs["image_folder"]
         self.authorized_users = kwargs["authorized_users"]
+        self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
 
     def dispatch(self, event):
         if event.event_type == "created" and not event.is_directory:
-            src_path = event.src_path.lower()
-            if src_path.endswith(".jpg") or src_path.endswith(".png"):
+            filename, ext = os.path.splitext(os.path.basename(event.src_path))
+            ext = ext.lower()
+            if ext in [".jpg", ".png", ".gif"]:
                 self.send_photo(event.src_path)
-            elif src_path.endswith(".mp4") or src_path.endswith(".avi"):
+            elif ext in [".mp4", ".avi", ".mov", ".mpg", ".ts"]:
                 self.send_video(event.src_path)
 
 
@@ -63,10 +65,10 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             filename, ext = os.path.splitext(os.path.basename(src_video_filename))
             dst_video_filename = "{}/{}-converted{}".format(os.path.dirname(src_video_filename), filename, ".mp4")
             subprocess.run(
-                ["/Users/ola/Workspace/smarthomebot/ffmpeg",
+                [self.path_to_ffmpeg,
                  "-y",
                  "-i",
-                 "{}".format(src_video_filename),
+                 src_video_filename,
                  dst_video_filename],
                 shell=False, check=True)
             self.bot.sendVideo(user, open(src_video_filename, "rb"),
@@ -107,8 +109,9 @@ class ChatUser(telepot.helper.ChatHandler):
     def on_chat_message(self, msg):
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
-            self.sender.sendMessage("Go f*ck yourself!")
-            print("Unauthorized access from {}".format(msg["chat"]["id"]))
+            self.sender.sendMessage("Go away")
+            if self.verbose:
+                print("Unauthorized access from {}".format(msg["chat"]["id"]))
             self.close()
             return
 
@@ -135,6 +138,7 @@ def main(arg):
     timeout_secs = 10
     image_folder = "/home/ftp-upload"
     authorized_users = ChatUser.AUTHORIZED_USERS
+    path_to_ffmpeg = "/Users/ola/Workspace/smarthomebot/ffmpeg"
     verbose = False
 
     with open("smarthomebot-config.json", "r") as config_file:
@@ -150,6 +154,8 @@ def main(arg):
         timeout_secs = config["timeout_secs"]
     if "authorized_users" in config.keys():
         authorized_users = config["authorized_users"]
+    if "path_to_ffmpeg" in config.keys():
+        path_to_ffmpeg = config["path_to_ffmpeg"]
     if "verbose" in config.keys():
         verbose = config["verbose"]
 
@@ -162,11 +168,12 @@ def main(arg):
     event_handler = UploadDirectoryEventHandler(image_folder=image_folder,
                                                 verbose=verbose,
                                                 authorized_users=authorized_users,
+                                                path_to_ffmpeg=path_to_ffmpeg,
                                                 bot=bot)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=False)
     observer.start()
-    bot.message_loop(run_forever='Bot is listening ...')
+    bot.message_loop(run_forever="Bot is listening ...")
     try:
         while True:
             time.sleep(1)
