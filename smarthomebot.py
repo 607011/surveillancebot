@@ -17,7 +17,9 @@ import json
 import time
 import telepot
 import subprocess
-from telepot.delegate import per_chat_id, create_open, pave_event_space
+import asyncio
+from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
+from telepot.aio.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -97,9 +99,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             os.remove(dst_video_filename)
 
 
-class ChatUser(telepot.helper.ChatHandler):
-
-    AUTHORIZED_USERS = [217884835]
+class ChatUser(telepot.aio.helper.ChatHandler):
 
     def __init__(self, *args, **kwargs):
         super(ChatUser, self).__init__(*args, **kwargs)
@@ -107,18 +107,14 @@ class ChatUser(telepot.helper.ChatHandler):
         if "timeout" in kwargs.keys():
             self.timeout_secs = kwargs["timeout"]
         self.verbose = True
-        if "verbose" in kwargs.keys():
-            self.verbose = kwargs["verbose"]
-        self.authorized_users = ChatUser.AUTHORIZED_USERS
-        if "authorized_users" in kwargs.keys():
-            self.authorized_users = kwargs["authorized_users"]
+        self.authorized_users = [217884835]
 
-    def open(self, initial_msg, seed):
-        self.on_chat_message(initial_msg)
+    async def open(self, initial_msg, seed):
+        await self.on_chat_message(initial_msg)
         return True
 
     def on__idle(self, event):
-        self.sender.sendMessage("Session expired. - Keep cool, nothing to worry about.")
+        self.sender.sendMessage("*yawn*")
         self.close()
 
     def on_close(self, msg):
@@ -126,83 +122,101 @@ class ChatUser(telepot.helper.ChatHandler):
             print("on_close() called.")
         return True
 
-    def on_chat_message(self, msg):
+    async def on_callback_query(self, msg):
+        query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
+        print("Callback Query:", query_id, from_id, query_data)
+        await self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
+        if query_data == "keller":
+            pass
+        elif query_data == "wohnzimmer":
+            pass
+
+    async def on_chat_message(self, msg):
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
-            self.sender.sendMessage("Go away")
+            await self.sender.sendMessage("Go away!")
             if self.verbose:
                 print("Unauthorized access from {}".format(msg["chat"]["id"]))
             self.close()
             return
 
         if content_type == "text":
-            pprint(msg)
-            msg_text = msg["text"]
-            user_name = msg["from"]["first_name"]
-            self.sender.sendMessage('You ({}) said: {}'.format(user_name, msg_text))
+            if self.verbose:
+                pprint(msg)
+            await self.sender.sendMessage('You ({}) said: {}'.format(msg["from"]["first_name"], msg["text"]))
+            if msg["text"] == "/snapshot":
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text='Wohnzimmer', callback_data='wohnzimmer'),
+                     InlineKeyboardButton(text='Keller', callback_data='keller')],
+                ])
+                await self.sender.sendMessage("Choose camera to take a snapshot from", reply_markup=keyboard)
         elif content_type == "sticker":
-            self.sender.sendMessage("I'm ignoring all stickers you send me.")
+            await self.sender.sendMessage("I'm ignoring all stickers you send me.")
         elif content_type == "photo":
-            self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
+            await self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
             photo_file = open("facepalm-ernie.jpg", "rb")
-            self.sender.sendPhoto(photo_file,
-                                  caption="That's me. Nice, huh?")
+            await self.sender.sendPhoto(photo_file, caption="That's me. Nice, huh?")
         elif content_type == "document":
-            self.sender.sendMessage("What do you want me to do with files?")
+            await self.sender.sendMessage("What do you want me to do with files?")
         else:
-            self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
+            await self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
 
 
 def main(arg):
     telegram_bot_token = None
-    timeout_secs = 10
+    authorized_users = None
+    timeout_secs = 10*60
     image_folder = "/home/ftp-upload"
-    authorized_users = ChatUser.AUTHORIZED_USERS
     path_to_ffmpeg = None
-    verbose = False
     max_photo_size = 1280
+    verbose = False
+    config_filename = "smarthomebot-config.json"
 
-    with open("smarthomebot-config.json", "r") as config_file:
+    with open(config_filename, "r") as config_file:
         config = json.load(config_file)
     if "telegram_bot_token" in config.keys():
         telegram_bot_token = config["telegram_bot_token"]
-    if telegram_bot_token == None:
+    if not telegram_bot_token:
         print("Error: config file doesn't contain a telegram_bot_token")
         return
-    if "image_folder" in config.keys():
-        image_folder = config["image_folder"]
-    if "timeout_secs" in config.keys():
-        timeout_secs = config["timeout_secs"]
     if "authorized_users" in config.keys():
         authorized_users = config["authorized_users"]
+    if type(authorized_users) is not list or len(authorized_users) == 0:
+        print("Error: config file doesn't contain an authorized_users list")
+        return
+    if "timeout_secs" in config.keys():
+        timeout_secs = config["timeout_secs"]
+    if "image_folder" in config.keys():
+        image_folder = config["image_folder"]
     if "path_to_ffmpeg" in config.keys():
         path_to_ffmpeg = config["path_to_ffmpeg"]
-    if "verbose" in config.keys():
-        verbose = config["verbose"]
     if "max_photo_size" in config.keys():
         max_photo_size = config["max_photo_size"]
+    if "verbose" in config.keys():
+        verbose = config["verbose"]
 
-    bot = telepot.DelegatorBot(telegram_bot_token, [
-      pave_event_space()(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
+    bot = telepot.aio.DelegatorBot(telegram_bot_token, [
+        include_callback_query_chat_id(pave_event_space())(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
     ])
 
     if verbose:
        print("Monitoring {} ...".format(image_folder))
-    event_handler = UploadDirectoryEventHandler(image_folder=image_folder,
-                                                verbose=verbose,
-                                                authorized_users=authorized_users,
-                                                path_to_ffmpeg=path_to_ffmpeg,
-                                                max_photo_size=max_photo_size,
-                                                bot=bot)
+    event_handler = UploadDirectoryEventHandler(
+        image_folder=image_folder,
+        verbose=verbose,
+        authorized_users=authorized_users,
+        path_to_ffmpeg=path_to_ffmpeg,
+        max_photo_size=max_photo_size,
+        bot=bot)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=False)
     observer.start()
-    bot.message_loop(run_forever="Bot is listening ...")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
+    if verbose:
+        print("Starting bot event loop ...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(bot.message_loop())
+    loop.run_forever()
+    observer.stop()
     observer.join()
     if verbose:
         print("Exiting ...")
