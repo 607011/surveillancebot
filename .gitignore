@@ -1,0 +1,6 @@
+.idea/*
+smarthomebot-config.json
+ffmpeg
+sample.*
+samples/*
+.DS_Store
