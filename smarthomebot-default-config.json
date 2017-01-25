@@ -1,14 +1,16 @@
 {
   "telegram_bot_token": "***place your token here***",
   "timeout_secs": 3600,
-  "image_folder": "/Users/ftp-upload",
+  "image_folder": "***/home/ftp-upload***",
   "authorized_users": [ user ids go here ],
-  "path_to_ffmpeg": "/Users/you/smarthomebot/ffmpeg",
+  "path_to_ffmpeg": "***/usr/local/bin/ffmpeg***",
   "max_photo_size": 1280,
   "cameras": [
-    { "address": "IP or hostname", "name": "living room"},
-    { "address": "IP or hostname", "name": "storage"},
-    { "address": "IP or hostname", "name": "entrance"}
+    {
+      "name": "***living room***",
+      "address": "***IP or hostname***",
+      "snapshot_url": "***http://cam.ip/snapshot.jpg***"
+    }
   ],
   "verbose": true
 }
