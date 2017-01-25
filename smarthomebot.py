@@ -17,6 +17,7 @@ import json
 import time
 import telepot
 import subprocess
+import urllib.request
 import asyncio
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.aio.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
@@ -85,12 +86,19 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 time.sleep(0.1)
             filename, ext = os.path.splitext(os.path.basename(src_video_filename))
             dst_video_filename = "{}/{}-converted{}".format(os.path.dirname(src_video_filename), filename, ".mp4")
-            # TODO: restraint video to max size 480x320; H.264 and MPEG-4 should be used as the codec and container.
             subprocess.run(
                 [self.path_to_ffmpeg,
                  "-y",
                  "-i",
                  src_video_filename,
+                 "-vf",
+                 "scale=480:320",
+                 "-movflags",
+                 "+faststart",
+                 "-c:v",
+                 "libx264",
+                 "-preset",
+                 "fast",
                  dst_video_filename],
                 shell=False, check=True)
             self.bot.sendVideo(user, open(src_video_filename, "rb"),
@@ -102,12 +110,14 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 class ChatUser(telepot.aio.helper.ChatHandler):
 
     def __init__(self, *args, **kwargs):
+        global authorized_users, verbose
+
         super(ChatUser, self).__init__(*args, **kwargs)
         self.timeout_secs = 10
         if "timeout" in kwargs.keys():
             self.timeout_secs = kwargs["timeout"]
-        self.verbose = True
-        self.authorized_users = [217884835]
+        self.verbose = verbose
+        self.authorized_users = authorized_users
 
     async def open(self, initial_msg, seed):
         await self.on_chat_message(initial_msg)
@@ -123,15 +133,28 @@ class ChatUser(telepot.aio.helper.ChatHandler):
         return True
 
     async def on_callback_query(self, msg):
+        global cameras
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
         print("Callback Query:", query_id, from_id, query_data)
         await self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
-        if query_data == "keller":
-            pass
-        elif query_data == "wohnzimmer":
-            pass
+        if query_data in cameras.keys():
+            handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
+            response = None
+            try:
+                response = urllib.request.urlopen(cameras[query_data]["snapshot_url"])
+            except urllib.error.URLError:
+                pass
+            if response is None:
+                return
+            f = open(photo_filename, 'wb+')
+            f.write(response.read())
+            f.close()
+            await self.sender.sendPhoto(open(photo_filename, 'rb'), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+            os.remove(photo_filename)
 
     async def on_chat_message(self, msg):
+        global cameras
+
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
             await self.sender.sendMessage("Go away!")
@@ -145,11 +168,9 @@ class ChatUser(telepot.aio.helper.ChatHandler):
                 pprint(msg)
             await self.sender.sendMessage('You ({}) said: {}'.format(msg["from"]["first_name"], msg["text"]))
             if msg["text"] == "/snapshot":
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text='Wohnzimmer', callback_data='wohnzimmer'),
-                     InlineKeyboardButton(text='Keller', callback_data='keller')],
-                ])
-                await self.sender.sendMessage("Choose camera to take a snapshot from", reply_markup=keyboard)
+                kbd = [InlineKeyboardButton(text=cameras[c]["name"], callback_data=c) for c in cameras.keys()]
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
+                await self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
         elif content_type == "sticker":
             await self.sender.sendMessage("I'm ignoring all stickers you send me.")
         elif content_type == "photo":
@@ -162,14 +183,19 @@ class ChatUser(telepot.aio.helper.ChatHandler):
             await self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
 
 
+# global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
+authorized_users = None
+cameras = None
+path_to_ffmpeg = None
+verbose = False
+
+
 def main(arg):
-    telegram_bot_token = None
-    authorized_users = None
-    timeout_secs = 10*60
+    global authorized_users, cameras, path_to_ffmpeg, verbose
+    timeout_secs = 10 * 60
     image_folder = "/home/ftp-upload"
-    path_to_ffmpeg = None
     max_photo_size = 1280
-    verbose = False
+    telegram_bot_token = None
     config_filename = "smarthomebot-config.json"
 
     with open(config_filename, "r") as config_file:
@@ -186,6 +212,8 @@ def main(arg):
         return
     if "timeout_secs" in config.keys():
         timeout_secs = config["timeout_secs"]
+    if "cameras" in config.keys():
+        cameras = config["cameras"]
     if "image_folder" in config.keys():
         image_folder = config["image_folder"]
     if "path_to_ffmpeg" in config.keys():
@@ -216,10 +244,11 @@ def main(arg):
     loop = asyncio.get_event_loop()
     loop.create_task(bot.message_loop())
     loop.run_forever()
-    observer.stop()
-    observer.join()
+
     if verbose:
         print("Exiting ...")
+    observer.stop()
+    observer.join()
 
 if __name__ == "__main__":
     main(sys.argv)

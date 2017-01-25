@@ -2,15 +2,15 @@
   "telegram_bot_token": "***place your token here***",
   "timeout_secs": 3600,
   "image_folder": "***/home/ftp-upload***",
-  "authorized_users": [ user ids go here ],
+  "authorized_users": [ ***user ids go here*** ],
   "path_to_ffmpeg": "***/usr/local/bin/ffmpeg***",
   "max_photo_size": 1280,
-  "cameras": [
-    {
+  "cameras": {
+    "***id***": {
       "name": "***living room***",
       "address": "***IP or hostname***",
       "snapshot_url": "***http://cam.ip/snapshot.jpg***"
     }
-  ],
+  },
   "verbose": true
 }
