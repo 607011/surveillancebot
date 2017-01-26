@@ -17,14 +17,23 @@ import json
 import time
 import telepot
 import subprocess
+import shelve
 import urllib.request
+from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from PIL import Image
-from tempfile import mkstemp
+
+
+APPNAME = "smarthomebot"
+
+class easydict(dict):
+    def __missing__(self, key):
+        self[key] = easydict()
+        return self[key]
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -134,8 +143,8 @@ class ChatUser(telepot.helper.ChatHandler):
             response = None
             try:
                 response = urllib.request.urlopen(cameras[query_data]["snapshot_url"])
-            except urllib.error.URLError:
-                pass # TODO: inform chat user about error
+            except urllib.error.URLError as e:
+                self.sender.sendMessage("Error accessing snapshot URL {}: {}".format(cameras[query_data]["snapshot_url"], e.reason))
             if response is None:
                 return
             f = open(photo_filename, "wb+")
@@ -144,6 +153,7 @@ class ChatUser(telepot.helper.ChatHandler):
             self.sender.sendPhoto(open(photo_filename, "rb"),
                                   caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
             os.remove(photo_filename)
+            self.send_snapshot_menu()
 
     def send_snapshot_menu(self):
         kbd = [InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c) for c in self.cameras.keys()]
@@ -160,24 +170,44 @@ class ChatUser(telepot.helper.ChatHandler):
             return
 
         if content_type == "text":
+            global settings
             if self.verbose:
                 pprint(msg)
             msg_text = msg["text"]
             if msg_text.startswith("/start"):
-                self.sender.sendMessage("*Welcome to your Smart Home Bot!*\n\n"
-                                        "It's intended to inform you about possible intruders "
+                self.sender.sendMessage("*Welcome to your Home Surveillance Bot!*\n\n"
+                                        "I'm intended to inform you about possible intruders "
                                         "by sending you snapshots and videos from your cameras as soon as they "
                                         "detect motion or sound in your home.\n",
                                         parse_mode="Markdown")
                 self.send_snapshot_menu()
             elif msg_text.startswith("/snapshot"):
-                self.send_snapshot_menu()
+                c = msg_text.split()[1:]
+                if len(c) == 0:
+                    self.send_snapshot_menu()
+                else:
+                    if c[0] == "interval":
+                        if len(c) > 1:
+                            interval = int(c[1])
+                            settings[chat_id]["snapshot"]["interval"] = interval
+                            self.sender.sendMessage("Snapshot interval set to {} seconds".format(interval))
+                        else:
+                            pprint(settings[chat_id]["snapshot"]["interval"])
+                            if settings[chat_id]["snapshot"]["interval"] == {}:
+                                self.sender.sendMessage("Snapshot interval hasn't been set yet.")
+                            else:
+                                self.sender.sendMessage("Snapshot interval currently set to {} seconds.".format(settings[chat_id]["snapshot"]["interval"]))
+
             elif msg_text.startswith("/help"):
                 self.sender.sendMessage("Available commands:\n\n"
                                         "/help show this message\n"
                                         "/snapshot show the list of your cameras to take a snapshot from\n"
                                         "/start (re)start this bot",
                                         parse_mode="Markdown")
+            elif msg_text.startswith("/"):
+                self.sender.sendMessage("Unknown command. Enter /help for more info.")
+            else:
+                self.sender.sendMessage("I'm not very talkative. Try typing /help for more info.")
         elif content_type == "photo":
             self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
             photo_file = open("facepalm-ernie.jpg", "rb")
@@ -190,16 +220,19 @@ class ChatUser(telepot.helper.ChatHandler):
 authorized_users = None
 cameras = None
 verbose = False
+settings = easydict()
 
 
 def main(arg):
-    global authorized_users, cameras, verbose
+    global authorized_users, cameras, verbose, settings
     path_to_ffmpeg = None
     timeout_secs = 10 * 60
     image_folder = "/home/ftp-upload"
     max_photo_size = 1280
     telegram_bot_token = None
     config_filename = "smarthomebot-config.json"
+    shelf = shelve.open(".smarthomebot.shelf")
+    settings = shelf[APPNAME]
 
     with open(config_filename, "r") as config_file:
         config = json.load(config_file)
@@ -225,11 +258,9 @@ def main(arg):
         max_photo_size = config["max_photo_size"]
     if "verbose" in config.keys():
         verbose = config["verbose"]
-
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
     ])
-
     if verbose:
        print("Monitoring {} ...".format(image_folder))
     event_handler = UploadDirectoryEventHandler(
@@ -242,13 +273,19 @@ def main(arg):
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=False)
     observer.start()
-
-    bot.message_loop(run_forever='Bot listening ...')
-
+    try:
+        bot.message_loop(run_forever='Bot listening ...')
+    except KeyboardInterrupt:
+        pass
     if verbose:
         print("Exiting ...")
     observer.stop()
     observer.join()
+    shelf[APPNAME] = settings
+    pprint(settings)
+    shelf.sync()
+    shelf.close()
+
 
 if __name__ == "__main__":
     main(sys.argv)
