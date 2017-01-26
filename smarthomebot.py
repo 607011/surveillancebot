@@ -18,9 +18,8 @@ import time
 import telepot
 import subprocess
 import urllib.request
-import asyncio
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
-from telepot.aio.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
+from telepot.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -80,15 +79,16 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 print("No path to ffmpeg given. Cannot send videos.")
             return
         for user in self.authorized_users:
-            if self.verbose:
-                print("Sending video {} ...".format(src_video_filename))
             while os.stat(src_video_filename).st_size == 0: # make sure file is written
                 time.sleep(0.1)
-            filename, ext = os.path.splitext(os.path.basename(src_video_filename))
-            dst_video_filename = "{}/{}-converted{}".format(os.path.dirname(src_video_filename), filename, ".mp4")
+            handle, dst_video_filename = mkstemp(prefix="smarthomebot-", suffix=".mp4")
+            if self.verbose:
+                print("Converting video {} to {} ...".format(src_video_filename, dst_video_filename))
             subprocess.run(
                 [self.path_to_ffmpeg,
                  "-y",
+                 "-loglevel",
+                 "panic",
                  "-i",
                  src_video_filename,
                  "-vf",
@@ -101,13 +101,14 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                  "fast",
                  dst_video_filename],
                 shell=False, check=True)
-            self.bot.sendVideo(user, open(src_video_filename, "rb"),
-                               caption="{} {}".format(filename, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+            self.bot.sendVideo(user, open(dst_video_filename, "rb"),
+                               caption="{} {}".format(os.path.basename(src_video_filename),
+                                                      datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
             os.remove(src_video_filename)
             os.remove(dst_video_filename)
 
 
-class ChatUser(telepot.aio.helper.ChatHandler):
+class ChatUser(telepot.helper.ChatHandler):
 
     def __init__(self, *args, **kwargs):
         global authorized_users, verbose
@@ -119,8 +120,8 @@ class ChatUser(telepot.aio.helper.ChatHandler):
         self.verbose = verbose
         self.authorized_users = authorized_users
 
-    async def open(self, initial_msg, seed):
-        await self.on_chat_message(initial_msg)
+    def open(self, initial_msg, seed):
+        self.on_chat_message(initial_msg)
         return True
 
     def on__idle(self, event):
@@ -132,11 +133,11 @@ class ChatUser(telepot.aio.helper.ChatHandler):
             print("on_close() called.")
         return True
 
-    async def on_callback_query(self, msg):
+    def on_callback_query(self, msg):
         global cameras
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
         print("Callback Query:", query_id, from_id, query_data)
-        await self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
+        self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
         if query_data in cameras.keys():
             handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
             response = None
@@ -149,15 +150,15 @@ class ChatUser(telepot.aio.helper.ChatHandler):
             f = open(photo_filename, 'wb+')
             f.write(response.read())
             f.close()
-            await self.sender.sendPhoto(open(photo_filename, 'rb'), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+            self.sender.sendPhoto(open(photo_filename, 'rb'), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
             os.remove(photo_filename)
 
-    async def on_chat_message(self, msg):
+    def on_chat_message(self, msg):
         global cameras
 
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
-            await self.sender.sendMessage("Go away!")
+            self.sender.sendMessage("Go away!")
             if self.verbose:
                 print("Unauthorized access from {}".format(msg["chat"]["id"]))
             self.close()
@@ -166,21 +167,21 @@ class ChatUser(telepot.aio.helper.ChatHandler):
         if content_type == "text":
             if self.verbose:
                 pprint(msg)
-            await self.sender.sendMessage('You ({}) said: {}'.format(msg["from"]["first_name"], msg["text"]))
+            self.sender.sendMessage('You ({}) said: {}'.format(msg["from"]["first_name"], msg["text"]))
             if msg["text"] == "/snapshot":
                 kbd = [InlineKeyboardButton(text=cameras[c]["name"], callback_data=c) for c in cameras.keys()]
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
-                await self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
+                self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
         elif content_type == "sticker":
-            await self.sender.sendMessage("I'm ignoring all stickers you send me.")
+            self.sender.sendMessage("I'm ignoring all stickers you send me.")
         elif content_type == "photo":
-            await self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
+            self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
             photo_file = open("facepalm-ernie.jpg", "rb")
-            await self.sender.sendPhoto(photo_file, caption="That's me. Nice, huh?")
+            self.sender.sendPhoto(photo_file, caption="That's me. Nice, huh?")
         elif content_type == "document":
-            await self.sender.sendMessage("What do you want me to do with files?")
+            self.sender.sendMessage("What do you want me to do with files?")
         else:
-            await self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
+            self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
 
 
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
@@ -223,7 +224,7 @@ def main(arg):
     if "verbose" in config.keys():
         verbose = config["verbose"]
 
-    bot = telepot.aio.DelegatorBot(telegram_bot_token, [
+    bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
     ])
 
@@ -239,11 +240,8 @@ def main(arg):
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=False)
     observer.start()
-    if verbose:
-        print("Starting bot event loop ...")
-    loop = asyncio.get_event_loop()
-    loop.create_task(bot.message_loop())
-    loop.run_forever()
+
+    bot.message_loop(run_forever='Listening ...')
 
     if verbose:
         print("Exiting ...")
