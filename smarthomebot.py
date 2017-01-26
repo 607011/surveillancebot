@@ -34,7 +34,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.bot = kwargs["bot"]
         self.verbose = kwargs["verbose"]
         self.image_folder = kwargs["image_folder"]
-        self.authorized_users = kwargs["authorized_users"]
+        self.authorized_users = kwargs["authorized_users"] or []
         self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
         self.max_photo_size = kwargs["max_photo_size"]
 
@@ -42,15 +42,10 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if event.event_type == "created" and not event.is_directory:
             filename, ext = os.path.splitext(os.path.basename(event.src_path))
             ext = ext.lower()
-            if ext in [".jpg", ".png", ".gif"]:
+            if ext in [".jpg", ".png"]:
                 self.send_photo(event.src_path)
-            elif ext in [".mp4", ".avi", ".mov", ".mpg", ".ts"]:
+            elif ext in [".avi", ".mp4", ".mkv", ".m4v", ".mov", ".mpg"]:
                 self.send_video(event.src_path)
-
-
-    def send_message(self, msg):
-        for user in self.authorized_users:
-            pass
 
     def send_photo(self, src_photo_filename):
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
@@ -74,13 +69,9 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         os.remove(dst_photo_filename)
 
     def send_video(self, src_video_filename):
-        if self.path_to_ffmpeg is None:
-            if self.verbose:
-                print("No path to ffmpeg given. Cannot send videos.")
-            return
-        for user in self.authorized_users:
-            while os.stat(src_video_filename).st_size == 0: # make sure file is written
-                time.sleep(0.1)
+        while os.stat(src_video_filename).st_size == 0:  # make sure file is written
+            time.sleep(0.1)
+        if self.path_to_ffmpeg:
             handle, dst_video_filename = mkstemp(prefix="smarthomebot-", suffix=".mp4")
             if self.verbose:
                 print("Converting video {} to {} ...".format(src_video_filename, dst_video_filename))
@@ -101,17 +92,17 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                  "fast",
                  dst_video_filename],
                 shell=False, check=True)
-            self.bot.sendVideo(user, open(dst_video_filename, "rb"),
-                               caption="{} {}".format(os.path.basename(src_video_filename),
-                                                      datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
-            os.remove(src_video_filename)
+            for user in self.authorized_users:
+                self.bot.sendVideo(user, open(dst_video_filename, "rb"),
+                                   caption="{} ({})".format(os.path.basename(src_video_filename),
+                                                            datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
             os.remove(dst_video_filename)
+        os.remove(src_video_filename)
 
 
 class ChatUser(telepot.helper.ChatHandler):
-
     def __init__(self, *args, **kwargs):
-        global authorized_users, verbose
+        global authorized_users, cameras, verbose
 
         super(ChatUser, self).__init__(*args, **kwargs)
         self.timeout_secs = 10
@@ -119,6 +110,7 @@ class ChatUser(telepot.helper.ChatHandler):
             self.timeout_secs = kwargs["timeout"]
         self.verbose = verbose
         self.authorized_users = authorized_users
+        self.cameras = cameras
 
     def open(self, initial_msg, seed):
         self.on_chat_message(initial_msg)
@@ -134,28 +126,31 @@ class ChatUser(telepot.helper.ChatHandler):
         return True
 
     def on_callback_query(self, msg):
-        global cameras
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
         print("Callback Query:", query_id, from_id, query_data)
         self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
-        if query_data in cameras.keys():
+        if query_data in self.cameras.keys():
             handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
             response = None
             try:
                 response = urllib.request.urlopen(cameras[query_data]["snapshot_url"])
             except urllib.error.URLError:
-                pass
+                pass # TODO: inform chat user about error
             if response is None:
                 return
-            f = open(photo_filename, 'wb+')
+            f = open(photo_filename, "wb+")
             f.write(response.read())
             f.close()
-            self.sender.sendPhoto(open(photo_filename, 'rb'), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+            self.sender.sendPhoto(open(photo_filename, "rb"),
+                                  caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
             os.remove(photo_filename)
 
-    def on_chat_message(self, msg):
-        global cameras
+    def send_snapshot_menu(self):
+        kbd = [InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c) for c in self.cameras.keys()]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
+        self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
 
+    def on_chat_message(self, msg):
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
             self.sender.sendMessage("Go away!")
@@ -167,19 +162,26 @@ class ChatUser(telepot.helper.ChatHandler):
         if content_type == "text":
             if self.verbose:
                 pprint(msg)
-            self.sender.sendMessage('You ({}) said: {}'.format(msg["from"]["first_name"], msg["text"]))
-            if msg["text"] == "/snapshot":
-                kbd = [InlineKeyboardButton(text=cameras[c]["name"], callback_data=c) for c in cameras.keys()]
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
-                self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
-        elif content_type == "sticker":
-            self.sender.sendMessage("I'm ignoring all stickers you send me.")
+            msg_text = msg["text"]
+            if msg_text.startswith("/start"):
+                self.sender.sendMessage("*Welcome to your Smart Home Bot!*\n\n"
+                                        "It's intended to inform you about possible intruders "
+                                        "by sending you snapshots and videos from your cameras as soon as they "
+                                        "detect motion or sound in your home.\n",
+                                        parse_mode="Markdown")
+                self.send_snapshot_menu()
+            elif msg_text.startswith("/snapshot"):
+                self.send_snapshot_menu()
+            elif msg_text.startswith("/help"):
+                self.sender.sendMessage("Available commands:\n\n"
+                                        "/help show this message\n"
+                                        "/snapshot show the list of your cameras to take a snapshot from\n"
+                                        "/start (re)start this bot",
+                                        parse_mode="Markdown")
         elif content_type == "photo":
             self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
             photo_file = open("facepalm-ernie.jpg", "rb")
             self.sender.sendPhoto(photo_file, caption="That's me. Nice, huh?")
-        elif content_type == "document":
-            self.sender.sendMessage("What do you want me to do with files?")
         else:
             self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
 
@@ -187,12 +189,12 @@ class ChatUser(telepot.helper.ChatHandler):
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
 authorized_users = None
 cameras = None
-path_to_ffmpeg = None
 verbose = False
 
 
 def main(arg):
-    global authorized_users, cameras, path_to_ffmpeg, verbose
+    global authorized_users, cameras, verbose
+    path_to_ffmpeg = None
     timeout_secs = 10 * 60
     image_folder = "/home/ftp-upload"
     max_photo_size = 1280
@@ -241,7 +243,7 @@ def main(arg):
     observer.schedule(event_handler, image_folder, recursive=False)
     observer.start()
 
-    bot.message_loop(run_forever='Listening ...')
+    bot.message_loop(run_forever='Bot listening ...')
 
     if verbose:
         print("Exiting ...")
