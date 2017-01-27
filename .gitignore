@@ -1,5 +1,6 @@
 .idea/*
 smarthomebot-config.json
+.smarthomebot.shelf*
 ffmpeg
 sample.*
 samples/*

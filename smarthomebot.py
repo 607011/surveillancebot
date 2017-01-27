@@ -232,7 +232,10 @@ def main(arg):
     telegram_bot_token = None
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
-    settings = shelf[APPNAME]
+    if APPNAME in shelf.keys():
+        settings = shelf[APPNAME]
+    else:
+        settings = { APPNAME: {} }
 
     with open(config_filename, "r") as config_file:
         config = json.load(config_file)
