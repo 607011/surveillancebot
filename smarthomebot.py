@@ -192,7 +192,6 @@ class ChatUser(telepot.helper.ChatHandler):
                             settings[chat_id]["snapshot"]["interval"] = interval
                             self.sender.sendMessage("Snapshot interval set to {} seconds".format(interval))
                         else:
-                            pprint(settings[chat_id]["snapshot"]["interval"])
                             if settings[chat_id]["snapshot"]["interval"] == {}:
                                 self.sender.sendMessage("Snapshot interval hasn't been set yet.")
                             else:
@@ -285,7 +284,6 @@ def main(arg):
     observer.stop()
     observer.join()
     shelf[APPNAME] = settings
-    pprint(settings)
     shelf.sync()
     shelf.close()
 
