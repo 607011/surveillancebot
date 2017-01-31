@@ -25,15 +25,35 @@ from telepot.delegate import per_chat_id, create_open, pave_event_space, include
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.job import Job
 from PIL import Image
 
 
 APPNAME = "smarthomebot"
 
+
 class easydict(dict):
     def __missing__(self, key):
         self[key] = easydict()
         return self[key]
+
+
+def make_snapshot(urls, bot, chat_id):
+    for url in urls:
+        handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
+        response = None
+        try:
+            response = urllib.request.urlopen(url)
+        except urllib.error.URLError as e:
+            bot.sendMessage(chat_id, "Error accessing snapshot URL {}: {}".format(url, e.reason))
+        if response is None:
+            return
+        f = open(photo_filename, "wb+")
+        f.write(response.read())
+        f.close()
+        bot.sendPhoto(chat_id, open(photo_filename, "rb"), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+        os.remove(photo_filename)
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -123,7 +143,15 @@ class ChatUser(telepot.helper.ChatHandler):
         self.cameras = cameras
 
     def open(self, initial_msg, seed):
+        global settings, scheduler, job
+        content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
+        interval = settings[chat_id]["snapshot"]["interval"]
+        if interval > 0:
+            if type(job) is Job:
+                job.remove()
+            job = scheduler.add_job(make_snapshot, 'interval', seconds=interval, kwargs={"bot": self.bot, "chat_id": chat_id, "urls": [cameras[c]["snapshot_url"] for c in self.cameras.keys()]})
+            scheduler.resume()
         return True
 
     def on__idle(self, event):
@@ -140,20 +168,8 @@ class ChatUser(telepot.helper.ChatHandler):
         print("Callback Query:", query_id, from_id, query_data)
         self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
         if query_data in self.cameras.keys():
-            handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
-            response = None
-            try:
-                response = urllib.request.urlopen(cameras[query_data]["snapshot_url"])
-            except urllib.error.URLError as e:
-                self.sender.sendMessage("Error accessing snapshot URL {}: {}".format(cameras[query_data]["snapshot_url"], e.reason))
-            if response is None:
-                return
-            f = open(photo_filename, "wb+")
-            f.write(response.read())
-            f.close()
-            self.sender.sendPhoto(open(photo_filename, "rb"),
-                                  caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-            os.remove(photo_filename)
+            url = cameras[query_data]["snapshot_url"]
+            make_snapshot(url)
             self.send_snapshot_menu()
 
     def send_snapshot_menu(self):
@@ -162,6 +178,7 @@ class ChatUser(telepot.helper.ChatHandler):
         self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
 
     def on_chat_message(self, msg):
+        global scheduler, job, settings
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
             self.sender.sendMessage("Go away!")
@@ -171,7 +188,6 @@ class ChatUser(telepot.helper.ChatHandler):
             return
 
         if content_type == "text":
-            global settings
             if self.verbose:
                 pprint(msg)
             msg_text = msg["text"]
@@ -191,7 +207,15 @@ class ChatUser(telepot.helper.ChatHandler):
                         if len(c) > 1:
                             interval = int(c[1])
                             settings[chat_id]["snapshot"]["interval"] = interval
-                            self.sender.sendMessage("Snapshot interval set to {} seconds".format(interval))
+                            if interval > 0:
+                                scheduler.resume()
+                                if type(job) is Job:
+                                    job.remove()
+                                job = scheduler.add_job(make_snapshot, 'interval', seconds=interval, kwargs={"bot": self.bot, "chat_id": chat_id, "urls": [cameras[c]["snapshot_url"] for c in self.cameras.keys()]})
+                                self.sender.sendMessage("Snapshot interval set to {} seconds".format(interval))
+                            else:
+                                scheduler.pause()
+                                self.sender.sendMessage("Timed snapshots deactivated")
                         else:
                             if settings[chat_id]["snapshot"]["interval"] == {}:
                                 self.sender.sendMessage("Snapshot interval hasn't been set yet.")
@@ -202,7 +226,9 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage("Available commands:\n\n"
                                         "/help show this message\n"
                                         "/snapshot show the list of your cameras to take a snapshot from\n"
-                                        "/start (re)start this bot",
+                                        "/snapshot `interval` display snapshot interval (secs)\n"
+                                        "/snapshot `interval` `secs` set snapshot interval to `secs` (`0` = off)\n"
+                                        "/start (re)start this bot\n",
                                         parse_mode="Markdown")
             elif msg_text.startswith("/"):
                 self.sender.sendMessage("Unknown command. Enter /help for more info.")
@@ -221,10 +247,13 @@ authorized_users = None
 cameras = None
 verbose = False
 settings = easydict()
+scheduler = BackgroundScheduler()
+job = None
+bot = None
 
 
 def main(arg):
-    global authorized_users, cameras, verbose, settings
+    global bot, authorized_users, cameras, verbose, settings, scheduler, job
     path_to_ffmpeg = None
     timeout_secs = 10 * 60
     image_folder = "/home/ftp-upload"
@@ -250,12 +279,12 @@ def main(arg):
     if "telegram_bot_token" in config.keys():
         telegram_bot_token = config["telegram_bot_token"]
     if not telegram_bot_token:
-        print("Error: config file doesn't contain a telegram_bot_token")
+        print("Error: config file doesn't contain a `telegram_bot_token`")
         return
     if "authorized_users" in config.keys():
         authorized_users = config["authorized_users"]
     if type(authorized_users) is not list or len(authorized_users) == 0:
-        print("Error: config file doesn't contain an authorized_users list")
+        print("Error: config file doesn't contain an `authorized_users` list")
         return
     if "timeout_secs" in config.keys():
         timeout_secs = config["timeout_secs"]
@@ -274,6 +303,7 @@ def main(arg):
     ])
     if verbose:
        print("Monitoring {} ...".format(image_folder))
+    scheduler.start(paused=True)
     event_handler = UploadDirectoryEventHandler(
         image_folder=image_folder,
         verbose=verbose,
@@ -295,6 +325,7 @@ def main(arg):
     shelf[APPNAME] = settings
     shelf.sync()
     shelf.close()
+    scheduler.shutdown()
 
 
 if __name__ == "__main__":
