@@ -111,6 +111,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
 class ChatUser(telepot.helper.ChatHandler):
     def __init__(self, *args, **kwargs):
+        # these globals are bad, but `ChatHandler` doesn't accept any extra **kwargs than `timeout`
         global authorized_users, cameras, verbose
 
         super(ChatUser, self).__init__(*args, **kwargs)
@@ -236,8 +237,16 @@ def main(arg):
     else:
         settings = { APPNAME: {} }
 
-    with open(config_filename, "r") as config_file:
-        config = json.load(config_file)
+    try:
+        with open(config_filename, "r") as config_file:
+            config = json.load(config_file)
+    except FileNotFoundError:
+        print("Error: config file '{}' not found: {}".format(config_filename))
+        return
+    except json.decoder.JSONDecodeError as e:
+        print("Error: invalid config file '{}': {} in line {} column {} (position {})".format(config_filename, e.msg, e.lineno, e.colno, e.pos))
+        return
+
     if "telegram_bot_token" in config.keys():
         telegram_bot_token = config["telegram_bot_token"]
     if not telegram_bot_token:
