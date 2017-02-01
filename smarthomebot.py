@@ -147,6 +147,8 @@ class ChatUser(telepot.helper.ChatHandler):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
         interval = settings[chat_id]["snapshot"]["interval"]
+        if type(interval) == easydict:
+            interval = 0
         if interval > 0:
             if type(job) is Job:
                 job.remove()
@@ -169,7 +171,7 @@ class ChatUser(telepot.helper.ChatHandler):
         self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
         if query_data in self.cameras.keys():
             url = cameras[query_data]["snapshot_url"]
-            make_snapshot(url)
+            make_snapshot([url], self.bot, from_id)
             self.send_snapshot_menu()
 
     def send_snapshot_menu(self):
@@ -262,9 +264,7 @@ def main(arg):
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
     if APPNAME in shelf.keys():
-        settings = shelf[APPNAME]
-    else:
-        settings = { APPNAME: {} }
+        settings = easydict(shelf[APPNAME])
 
     try:
         with open(config_filename, "r") as config_file:
