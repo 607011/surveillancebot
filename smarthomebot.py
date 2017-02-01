@@ -104,7 +104,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             handle, dst_video_filename = mkstemp(prefix="smarthomebot-", suffix=".mp4")
             if self.verbose:
                 print("Converting video {} to {} ...".format(src_video_filename, dst_video_filename))
-            subprocess.run(
+            subprocess.call(
                 [self.path_to_ffmpeg,
                  "-y",
                  "-loglevel",
@@ -120,7 +120,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                  "-preset",
                  "fast",
                  dst_video_filename],
-                shell=False, check=True)
+                shell=False)
             for user in self.authorized_users:
                 self.bot.sendVideo(user, open(dst_video_filename, "rb"),
                                    caption="{} ({})".format(os.path.basename(src_video_filename),
@@ -312,7 +312,7 @@ def main(arg):
         max_photo_size=max_photo_size,
         bot=bot)
     observer = Observer()
-    observer.schedule(event_handler, image_folder, recursive=False)
+    observer.schedule(event_handler, image_folder, recursive=True)
     observer.start()
     try:
         bot.message_loop(run_forever='Bot listening ...')
