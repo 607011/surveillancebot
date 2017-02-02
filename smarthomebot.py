@@ -79,6 +79,8 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
     def send_photo(self, src_photo_filename):
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
+        if self.verbose:
+            print("New photo file detected: {}".format(src_photo_filename))
         dst_photo_filename = src_photo_filename
         if self.max_photo_size:
             im = Image.open(src_photo_filename)
@@ -90,17 +92,22 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 im.save(dst_photo_filename, format="JPEG", quality=87)
                 os.remove(src_photo_filename)
             im.close()
+        """
         for user in self.authorized_users:
             if self.verbose:
                 print("Sending photo {} ...".format(dst_photo_filename))
             self.bot.sendPhoto(user, open(dst_photo_filename, "rb"),
                                caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+        """
         os.remove(dst_photo_filename)
 
     def send_video(self, src_video_filename):
+        global alerting_on
         while os.stat(src_video_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
-        if self.path_to_ffmpeg:
+        if self.verbose:
+            print("New video file detected: {}".format(src_video_filename))
+        if alerting_on and self.path_to_ffmpeg:
             handle, dst_video_filename = mkstemp(prefix="smarthomebot-", suffix=".mp4")
             if self.verbose:
                 print("Converting video {} to {} ...".format(src_video_filename, dst_video_filename))
@@ -146,6 +153,10 @@ class ChatUser(telepot.helper.ChatHandler):
         global settings, scheduler, job
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
+        if chat_id not in self.authorized_users:
+            print("Unauthoried chat start from {}".format(chat_id))
+            self.close()
+            return
         interval = settings[chat_id]["snapshot"]["interval"]
         if type(interval) == easydict:
             interval = 0
@@ -167,6 +178,11 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def on_callback_query(self, msg):
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
+        if from_id not in self.authorized_users:
+            print("Unauthorized callback from {}".format(from_id))
+            self.close()
+            return
+        # TODO: evaluate callback id
         print("Callback Query:", query_id, from_id, query_data)
         self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
         if query_data in self.cameras.keys():
@@ -180,12 +196,11 @@ class ChatUser(telepot.helper.ChatHandler):
         self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
 
     def on_chat_message(self, msg):
-        global scheduler, job, settings
+        global scheduler, job, settings, alerting_on
         content_type, chat_type, chat_id = telepot.glance(msg)
         if chat_id not in self.authorized_users:
             self.sender.sendMessage("Go away!")
-            if self.verbose:
-                print("Unauthorized access from {}".format(msg["chat"]["id"]))
+            print("Unauthorized access from {}".format(msg["chat"]["id"]))
             self.close()
             return
 
@@ -200,6 +215,15 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "detect motion or sound in your home.\n",
                                         parse_mode="Markdown")
                 self.send_snapshot_menu()
+            elif msg_text.startswith("/enable"):
+                alerting_on = True
+                self.sender.sendMessage("Alerting enabled.")
+            elif msg_text.startswith("/disable"):
+                alerting_on = False
+                self.sender.sendMessage("Alerting disabled.")
+            elif msg_text.startswith("/toggle"):
+                alerting_on = not alerting_on
+                self.sender.sendMessage("Alerting now {}.".format(["disabled", "enabled"][alerting_on]))
             elif msg_text.startswith("/snapshot"):
                 c = msg_text.split()[1:]
                 if len(c) == 0:
@@ -227,6 +251,7 @@ class ChatUser(telepot.helper.ChatHandler):
             elif msg_text.startswith("/help"):
                 self.sender.sendMessage("Available commands:\n\n"
                                         "/help show this message\n"
+                                        "/enable /disable /toggle surveillance and alerting\n"
                                         "/snapshot show the list of your cameras to take a snapshot from\n"
                                         "/snapshot `interval` display snapshot interval (secs)\n"
                                         "/snapshot `interval` `secs` set snapshot interval to `secs` (`0` = off)\n"
@@ -236,12 +261,8 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage("Unknown command. Enter /help for more info.")
             else:
                 self.sender.sendMessage("I'm not very talkative. Try typing /help for more info.")
-        elif content_type == "photo":
-            self.sender.sendMessage("I can't make use of your images. But I can show you one of me.")
-            photo_file = open("facepalm-ernie.jpg", "rb")
-            self.sender.sendPhoto(photo_file, caption="That's me. Nice, huh?")
         else:
-            self.sender.sendMessage("{} moved to Nirvana ...".format(content_type))
+            self.sender.sendMessage("Your {} was moved to Nirvana ...".format(content_type))
 
 
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
@@ -252,6 +273,7 @@ settings = easydict()
 scheduler = BackgroundScheduler()
 job = None
 bot = None
+alerting_on = True
 
 
 def main(arg):
@@ -303,6 +325,8 @@ def main(arg):
     ])
     if verbose:
        print("Monitoring {} ...".format(image_folder))
+       for user_id in authorized_users:
+           bot.sendMessage(user_id, "Bot started.")
     scheduler.start(paused=True)
     event_handler = UploadDirectoryEventHandler(
         image_folder=image_folder,
@@ -320,6 +344,8 @@ def main(arg):
         pass
     if verbose:
         print("Exiting ...")
+        for user_id in authorized_users:
+            bot.sendMessage(user_id, "Bot shut down.")
     observer.stop()
     observer.join()
     shelf[APPNAME] = settings
