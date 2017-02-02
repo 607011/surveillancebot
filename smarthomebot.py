@@ -15,6 +15,7 @@ import os
 import datetime
 import json
 import time
+import random
 import telepot
 import subprocess
 import shelve
@@ -46,7 +47,7 @@ def make_snapshot(urls, bot, chat_id):
         try:
             response = urllib.request.urlopen(url)
         except urllib.error.URLError as e:
-            bot.sendMessage(chat_id, "Error accessing snapshot URL {}: {}".format(url, e.reason))
+            bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(url, e.reason))
         if response is None:
             return
         f = open(photo_filename, "wb+")
@@ -137,6 +138,9 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
 
 class ChatUser(telepot.helper.ChatHandler):
+
+    IdleMessages = ["tüdelü ...", "*gähn", "Mir ist langweilig.", "Nicht passiert ...", "Jemand zu Hause?", "Hallo-o!!"]
+
     def __init__(self, *args, **kwargs):
         # these globals are bad, but `ChatHandler` doesn't accept any extra **kwargs than `timeout`
         global authorized_users, cameras, verbose
@@ -154,46 +158,78 @@ class ChatUser(telepot.helper.ChatHandler):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
         if chat_id not in self.authorized_users:
-            print("Unauthoried chat start from {}".format(chat_id))
+            print("Unauthorized chat start from {}".format(chat_id))
             self.close()
-            return
+            return False
+        self.init_scheduler(chat_id)
+        return True
+
+    def init_scheduler(self, chat_id):
+        global settings, scheduler, job
         interval = settings[chat_id]["snapshot"]["interval"]
-        if type(interval) == easydict:
+        if type(interval) is not int:
             interval = 0
+            settings[chat_id]["snapshot"]["interval"] = interval
         if interval > 0:
             if type(job) is Job:
                 job.remove()
-            job = scheduler.add_job(make_snapshot, 'interval', seconds=interval, kwargs={"bot": self.bot, "chat_id": chat_id, "urls": [cameras[c]["snapshot_url"] for c in self.cameras.keys()]})
+            urls = [ cameras[c]["snapshot_url"] for c in self.cameras.keys() ]
+            job = scheduler.add_job(make_snapshot, "interval",
+                                    seconds=interval,
+                                    kwargs={"bot": self.bot, "chat_id": chat_id, "urls": urls})
             scheduler.resume()
-        return True
 
     def on__idle(self, event):
-        self.sender.sendMessage("*yawn*")
-        self.close()
+        ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
+        self.sender.sendMessage(ChatUser.IdleMessages[ridx])
 
     def on_close(self, msg):
         if self.verbose:
             print("on_close() called.")
         return True
 
+    def send_snapshot_menu(self):
+        kbd = [ InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c) for c in self.cameras.keys() ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
+        self.sender.sendMessage("Schnappschuss anzeigen von:", reply_markup=keyboard)
+
+    def send_main_menu(self):
+        global alerting_on
+        kbd = [
+            InlineKeyboardButton(text=chr(0x1F4F7) + "Schnappschuss",
+                                 callback_data="snapshot"),
+            InlineKeyboardButton(text=[chr(0x25B6) + chr(0xFE0F) + "Alarme ein", chr(0x23F9) + "Alarme aus"][alerting_on],
+                                 callback_data=["enable", "disable"][alerting_on])
+            ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
+        self.sender.sendMessage("Wähle eine Aktion:", reply_markup=keyboard)
+
     def on_callback_query(self, msg):
+        global alerting_on
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
         if from_id not in self.authorized_users:
             print("Unauthorized callback from {}".format(from_id))
             self.close()
             return
-        # TODO: evaluate callback id
         print("Callback Query:", query_id, from_id, query_data)
-        self.bot.answerCallbackQuery(query_id, text="Showing you a snapshot camera ‘{}‘".format(query_data))
         if query_data in self.cameras.keys():
-            url = cameras[query_data]["snapshot_url"]
-            make_snapshot([url], self.bot, from_id)
+            self.bot.answerCallbackQuery(query_id,
+                                         text="Schnappschuss von deiner Kamera ‘{}‘".format(query_data))
+            if query_data in self.cameras.keys():
+                url = cameras[query_data]["snapshot_url"]
+                make_snapshot([url], self.bot, from_id)
+                self.send_snapshot_menu()
+        elif query_data == "disable":
+            alerting_on = False
+            self.bot.answerCallbackQuery(query_id, text="Alarme wurden ausgeschaltet.")
+            self.send_main_menu()
+        elif query_data == "enable":
+            alerting_on = True
+            self.bot.answerCallbackQuery(query_id, text="Alarme wurden eingeschaltet.")
+            self.send_main_menu()
+        elif query_data == "snapshot":
+            self.bot.answerCallbackQuery(query_id)
             self.send_snapshot_menu()
-
-    def send_snapshot_menu(self):
-        kbd = [InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c) for c in self.cameras.keys()]
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
-        self.sender.sendMessage("Choose camera to take a snapshot from:", reply_markup=keyboard)
 
     def on_chat_message(self, msg):
         global scheduler, job, settings, alerting_on
@@ -209,21 +245,21 @@ class ChatUser(telepot.helper.ChatHandler):
                 pprint(msg)
             msg_text = msg["text"]
             if msg_text.startswith("/start"):
-                self.sender.sendMessage("*Welcome to your Home Surveillance Bot!*\n\n"
-                                        "I'm intended to inform you about possible intruders "
-                                        "by sending you snapshots and videos from your cameras as soon as they "
-                                        "detect motion or sound in your home.\n",
+                self.sender.sendMessage("*Hallo, ich bin dein Heimüberwachungs-Bot!* " + chr(0x1F916) + "\n\n"
+                                        "Ich benachrichtige dich, wenn deine Webcams Bewegungen "
+                                        "und laute Geräusche erkannt haben "
+                                        "und sende dir ein Video von dem Vorfall.\n",
                                         parse_mode="Markdown")
-                self.send_snapshot_menu()
+                self.send_main_menu()
             elif msg_text.startswith("/enable"):
                 alerting_on = True
-                self.sender.sendMessage("Alerting enabled.")
+                self.sender.sendMessage("Alarme ein.")
             elif msg_text.startswith("/disable"):
                 alerting_on = False
-                self.sender.sendMessage("Alerting disabled.")
+                self.sender.sendMessage("Alarme aus.")
             elif msg_text.startswith("/toggle"):
                 alerting_on = not alerting_on
-                self.sender.sendMessage("Alerting now {}.".format(["disabled", "enabled"][alerting_on]))
+                self.sender.sendMessage("Alarme sind nun {}geschaltet.".format(["aus", "ein"][alerting_on]))
             elif msg_text.startswith("/snapshot"):
                 c = msg_text.split()[1:]
                 if len(c) == 0:
@@ -237,32 +273,37 @@ class ChatUser(telepot.helper.ChatHandler):
                                 scheduler.resume()
                                 if type(job) is Job:
                                     job.remove()
-                                job = scheduler.add_job(make_snapshot, 'interval', seconds=interval, kwargs={"bot": self.bot, "chat_id": chat_id, "urls": [cameras[c]["snapshot_url"] for c in self.cameras.keys()]})
-                                self.sender.sendMessage("Snapshot interval set to {} seconds".format(interval))
+                                urls = [ cameras[c]["snapshot_url"] for c in self.cameras.keys() ]
+                                job = scheduler.add_job(make_snapshot, "interval",
+                                                        seconds=interval,
+                                                        kwargs={"bot": self.bot, "chat_id": chat_id, "urls": urls})
+                                self.sender.sendMessage("Schnappschussintervall ist auf {} Sekunden eingestellt."
+                                                        .format(interval))
                             else:
                                 scheduler.pause()
-                                self.sender.sendMessage("Timed snapshots deactivated")
+                                self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind deaktiviert.")
                         else:
                             if settings[chat_id]["snapshot"]["interval"] == {}:
-                                self.sender.sendMessage("Snapshot interval hasn't been set yet.")
+                                self.sender.sendMessage("Schnappschussintervall wurde noch nicht eingestellt.")
                             else:
-                                self.sender.sendMessage("Snapshot interval currently set to {} seconds.".format(settings[chat_id]["snapshot"]["interval"]))
+                                self.sender.sendMessage("Schnappschussintervall ist derzeit auf {} Sekunden eingestellt."
+                                                        .format(settings[chat_id]["snapshot"]["interval"]))
 
             elif msg_text.startswith("/help"):
-                self.sender.sendMessage("Available commands:\n\n"
-                                        "/help show this message\n"
-                                        "/enable /disable /toggle surveillance and alerting\n"
-                                        "/snapshot show the list of your cameras to take a snapshot from\n"
-                                        "/snapshot `interval` display snapshot interval (secs)\n"
-                                        "/snapshot `interval` `secs` set snapshot interval to `secs` (`0` = off)\n"
-                                        "/start (re)start this bot\n",
+                self.sender.sendMessage("Verfügbare Kommandos:\n\n"
+                                        "/help diese Nachricht anzeigen\n"
+                                        "/enable /disable /toggle Benachrichtigungen aktivieren/deaktivieren\n"
+                                        "/snapshot Liste der Kameras anzeigen, die Schnappschüsse liefern können\n"
+                                        "/snapshot `interval` Das Zeitintervall (Sek.) anzeigen, in dem Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
+                                        "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden setzen (`0` für aus)\n"
+                                        "/start den Bot (neu)starten\n",
                                         parse_mode="Markdown")
             elif msg_text.startswith("/"):
-                self.sender.sendMessage("Unknown command. Enter /help for more info.")
+                self.sender.sendMessage("Unbekanntes Kommando. /help für weitere Infos eintippen.")
             else:
-                self.sender.sendMessage("I'm not very talkative. Try typing /help for more info.")
+                self.sender.sendMessage("Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.")
         else:
-            self.sender.sendMessage("Your {} was moved to Nirvana ...".format(content_type))
+            self.sender.sendMessage("Dein '{}' ist im Nirwana gelandet ...".format(content_type))
 
 
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
@@ -292,10 +333,12 @@ def main(arg):
         with open(config_filename, "r") as config_file:
             config = json.load(config_file)
     except FileNotFoundError:
-        print("Error: config file '{}' not found: {}".format(config_filename))
+        print("Error: config file '{}' not found: {}"
+              .format(config_filename))
         return
     except json.decoder.JSONDecodeError as e:
-        print("Error: invalid config file '{}': {} in line {} column {} (position {})".format(config_filename, e.msg, e.lineno, e.colno, e.pos))
+        print("Error: invalid config file '{}': {} in line {} column {} (position {})"
+              .format(config_filename, e.msg, e.lineno, e.colno, e.pos))
         return
 
     if "telegram_bot_token" in config.keys():
@@ -321,12 +364,18 @@ def main(arg):
     if "verbose" in config.keys():
         verbose = config["verbose"]
     bot = telepot.DelegatorBot(telegram_bot_token, [
-        include_callback_query_chat_id(pave_event_space())(per_chat_id(), create_open, ChatUser, timeout=timeout_secs),
+        include_callback_query_chat_id(pave_event_space())(per_chat_id(),
+                                                           create_open,
+                                                           ChatUser,
+                                                           timeout=timeout_secs),
     ])
     if verbose:
        print("Monitoring {} ...".format(image_folder))
        for user_id in authorized_users:
-           bot.sendMessage(user_id, "Bot started.")
+           try:
+               bot.sendMessage(user_id, "Bot gestartet.")
+           except:
+               pass
     scheduler.start(paused=True)
     event_handler = UploadDirectoryEventHandler(
         image_folder=image_folder,
@@ -339,13 +388,16 @@ def main(arg):
     observer.schedule(event_handler, image_folder, recursive=True)
     observer.start()
     try:
-        bot.message_loop(run_forever='Bot listening ...')
+        bot.message_loop(run_forever="Bot listening ...")
     except KeyboardInterrupt:
         pass
     if verbose:
         print("Exiting ...")
         for user_id in authorized_users:
-            bot.sendMessage(user_id, "Bot shut down.")
+            try:
+                bot.sendMessage(user_id, "Bot beendet.")
+            except:
+                pass
     observer.stop()
     observer.join()
     shelf[APPNAME] = settings
