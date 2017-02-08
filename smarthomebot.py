@@ -22,7 +22,7 @@ import shelve
 import urllib.request
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
-from telepot.delegate import per_chat_id, create_open, pave_event_space, include_callback_query_chat_id
+from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
 from pprint import pprint
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -139,28 +139,22 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
 class ChatUser(telepot.helper.ChatHandler):
 
-    IdleMessages = ["tüdelü ...", "*gähn", "Mir ist langweilig.", "Nicht passiert ...", "Jemand zu Hause?", "Hallo-o!!"]
+    IdleMessages = ["tüdelü ...", "*gähn", "Mir ist langweilig.", "Chill dein Life! Alles cool hier.",
+                    "Hier ist tote Hose.", "Nichts passiert ...", "Scheint niemand zu Hause zu sein.",
+                    "Hallo-o!!!"]
 
     def __init__(self, *args, **kwargs):
-        # these globals are bad, but `ChatHandler` doesn't accept any extra **kwargs than `timeout`
-        global authorized_users, cameras, verbose
-
+        global verbose, cameras
         super(ChatUser, self).__init__(*args, **kwargs)
         self.timeout_secs = 10
         if "timeout" in kwargs.keys():
             self.timeout_secs = kwargs["timeout"]
         self.verbose = verbose
-        self.authorized_users = authorized_users
         self.cameras = cameras
 
     def open(self, initial_msg, seed):
-        global settings, scheduler, job
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
-        if chat_id not in self.authorized_users:
-            print("Unauthorized chat start from {}".format(chat_id))
-            self.close()
-            return False
         self.init_scheduler(chat_id)
         return True
 
@@ -207,10 +201,6 @@ class ChatUser(telepot.helper.ChatHandler):
     def on_callback_query(self, msg):
         global alerting_on
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
-        if from_id not in self.authorized_users:
-            print("Unauthorized callback from {}".format(from_id))
-            self.close()
-            return
         print("Callback Query:", query_id, from_id, query_data)
         if query_data in self.cameras.keys():
             self.bot.answerCallbackQuery(query_id,
@@ -234,12 +224,6 @@ class ChatUser(telepot.helper.ChatHandler):
     def on_chat_message(self, msg):
         global scheduler, job, settings, alerting_on
         content_type, chat_type, chat_id = telepot.glance(msg)
-        if chat_id not in self.authorized_users:
-            self.sender.sendMessage("Go away!")
-            print("Unauthorized access from {}".format(msg["chat"]["id"]))
-            self.close()
-            return
-
         if content_type == "text":
             if self.verbose:
                 pprint(msg)
@@ -364,18 +348,13 @@ def main(arg):
     if "verbose" in config.keys():
         verbose = config["verbose"]
     bot = telepot.DelegatorBot(telegram_bot_token, [
-        include_callback_query_chat_id(pave_event_space())(per_chat_id(),
+        include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types="private"),
                                                            create_open,
                                                            ChatUser,
-                                                           timeout=timeout_secs),
+                                                           timeout=timeout_secs)
     ])
     if verbose:
        print("Monitoring {} ...".format(image_folder))
-       for user_id in authorized_users:
-           try:
-               bot.sendMessage(user_id, "Bot gestartet.")
-           except:
-               pass
     scheduler.start(paused=True)
     event_handler = UploadDirectoryEventHandler(
         image_folder=image_folder,
@@ -393,11 +372,6 @@ def main(arg):
         pass
     if verbose:
         print("Exiting ...")
-        for user_id in authorized_users:
-            try:
-                bot.sendMessage(user_id, "Bot beendet.")
-            except:
-                pass
     observer.stop()
     observer.join()
     shelf[APPNAME] = settings
