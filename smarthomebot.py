@@ -311,6 +311,8 @@ def main(arg):
     telegram_bot_token = None
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
+    do_send_videos = True
+    do_send_photos = False
     if APPNAME in shelf.keys():
         settings = easydict(shelf[APPNAME])
 
@@ -348,6 +350,10 @@ def main(arg):
         max_photo_size = config["max_photo_size"]
     if "verbose" in config.keys():
         verbose = config["verbose"]
+    if "send_videos" in config.keys():
+        do_send_videos = config["send_videos"]
+    if "send_photos" in config.keys():
+        do_send_photos = config["send_photos"]
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types="private"),
                                                            create_open,
@@ -363,6 +369,8 @@ def main(arg):
         authorized_users=authorized_users,
         path_to_ffmpeg=path_to_ffmpeg,
         max_photo_size=max_photo_size,
+        send_photos=do_send_photos,
+        send_videos=do_send_videos,
         bot=bot)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=True)
