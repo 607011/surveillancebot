@@ -71,48 +71,50 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.authorized_users = kwargs["authorized_users"] or []
         self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
         self.max_photo_size = kwargs["max_photo_size"]
+        self.do_send_photos = kwargs["send_photos"]
+        self.do_send_videos = kwargs["send_videos"]
 
     def dispatch(self, event):
         if event.event_type == "created" and not event.is_directory:
             filename, ext = os.path.splitext(os.path.basename(event.src_path))
             ext = ext.lower()
             if ext in [".jpg", ".png"]:
-                self.send_photo(event.src_path)
+                self.process_photo(event.src_path)
             elif ext in [".avi", ".mp4", ".mkv", ".m4v", ".mov", ".mpg"]:
-                self.send_video(event.src_path)
+                self.process_video(event.src_path)
 
-    def send_photo(self, src_photo_filename):
+    def process_photo(self, src_photo_filename):
+        global alerting_on
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
         if self.verbose:
             print("New photo file detected: {}".format(src_photo_filename))
         dst_photo_filename = src_photo_filename
-        if self.max_photo_size:
-            im = Image.open(src_photo_filename)
-            if im.width > self.max_photo_size or im.height > self.max_photo_size:
-                im.thumbnail((self.max_photo_size, self.max_photo_size), Image.BILINEAR)
-                handle, dst_photo_filename = mkstemp(prefix="smarthomebot-", suffix=".jpg")
+        if alerting_on and self.do_send_photos:
+            if self.max_photo_size:
+                im = Image.open(src_photo_filename)
+                if im.width > self.max_photo_size or im.height > self.max_photo_size:
+                    im.thumbnail((self.max_photo_size, self.max_photo_size), Image.BILINEAR)
+                    handle, dst_photo_filename = mkstemp(prefix="smarthomebot-", suffix=".jpg")
+                    if self.verbose:
+                        print("resizing photo to {} ...".format(dst_photo_filename))
+                    im.save(dst_photo_filename, format="JPEG", quality=87)
+                    os.remove(src_photo_filename)
+                im.close()
+            for user in self.authorized_users:
                 if self.verbose:
-                    print("resizing photo to {} ...".format(dst_photo_filename))
-                im.save(dst_photo_filename, format="JPEG", quality=87)
-                os.remove(src_photo_filename)
-            im.close()
-        """
-        for user in self.authorized_users:
-            if self.verbose:
-                print("Sending photo {} ...".format(dst_photo_filename))
-            self.bot.sendPhoto(user, open(dst_photo_filename, "rb"),
-                               caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-        """
+                    print("Sending photo {} ...".format(dst_photo_filename))
+                self.bot.sendPhoto(user, open(dst_photo_filename, "rb"),
+                                   caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
         os.remove(dst_photo_filename)
 
-    def send_video(self, src_video_filename):
+    def process_video(self, src_video_filename):
         global alerting_on
         while os.stat(src_video_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
         if self.verbose:
             print("New video file detected: {}".format(src_video_filename))
-        if alerting_on and self.path_to_ffmpeg:
+        if alerting_on and self.do_send_videos and self.path_to_ffmpeg:
             handle, dst_video_filename = mkstemp(prefix="smarthomebot-", suffix=".mp4")
             if self.verbose:
                 print("Converting video {} to {} ...".format(src_video_filename, dst_video_filename))
@@ -143,8 +145,8 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
 class ChatUser(telepot.helper.ChatHandler):
 
-    IdleMessages = ["tüdelü ...", "*gähn", "Mir ist langweilig.", "Chill dein Life! Alles cool hier.",
-                    "Hier ist tote Hose.", "Nichts passiert ...", "Scheint niemand zu Hause zu sein.",
+    IdleMessages = ["tüdelü ...", "*gähn*", "Mir ist langweilig.", "Chill dein Life! Alles cool hier.",
+                    "Hier ist tote Hose.", "Nix los hier ...", "Scheint niemand zu Hause zu sein.",
                     "Hallo-o!!!"]
 
     def __init__(self, *args, **kwargs):
@@ -182,7 +184,7 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def on_close(self, msg):
         if self.verbose:
-            print("on_close() called.")
+            print("on_close() called. {}".format(msg))
         return True
 
     def send_snapshot_menu(self):
@@ -271,7 +273,8 @@ class ChatUser(telepot.helper.ChatHandler):
                             if settings[chat_id]["snapshot"]["interval"] == {}:
                                 self.sender.sendMessage("Schnappschussintervall wurde noch nicht eingestellt.")
                             else:
-                                self.sender.sendMessage("Schnappschussintervall ist derzeit auf {} Sekunden eingestellt."
+                                self.sender.sendMessage("Schnappschussintervall ist derzeit auf "
+                                                        "{} Sekunden eingestellt."
                                                         .format(settings[chat_id]["snapshot"]["interval"]))
 
             elif msg_text.startswith("/help"):
@@ -279,8 +282,10 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "/help diese Nachricht anzeigen\n"
                                         "/enable /disable /toggle Benachrichtigungen aktivieren/deaktivieren\n"
                                         "/snapshot Liste der Kameras anzeigen, die Schnappschüsse liefern können\n"
-                                        "/snapshot `interval` Das Zeitintervall (Sek.) anzeigen, in dem Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
-                                        "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden setzen (`0` für aus)\n"
+                                        "/snapshot `interval` Das Zeitintervall (Sek.) anzeigen, in dem "
+                                        "Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
+                                        "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden "
+                                        "setzen (`0` für aus)\n"
                                         "/start den Bot (neu)starten\n",
                                         parse_mode="Markdown")
             elif msg_text.startswith("/"):
