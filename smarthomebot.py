@@ -19,7 +19,7 @@ import random
 import telepot
 import subprocess
 import shelve
-import urllib.request
+import urllib3
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -40,18 +40,22 @@ class easydict(dict):
         return self[key]
 
 
-def make_snapshot(urls, bot, chat_id):
-    for url in urls:
+def make_snapshot(cameras, bot, chat_id):
+    for camera in cameras:
         handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
         response = None
         try:
-            response = urllib.request.urlopen(url)
-        except urllib.error.URLError as e:
-            bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(url, e.reason))
+            http = urllib3.PoolManager()
+            headers = None
+            if "username" in camera.keys() and "password" in camera.keys():
+                headers = urllib3.util.make_headers(basic_auth="{}:{}".format(camera["username"], camera["password"]))
+            response = http.request("GET", camera["snapshot_url"], headers=headers)
+        except urllib3.exceptions.HTTPError as e:
+            bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(camera["snapshot_url"], e.reason))
         if response is None:
             return
         f = open(photo_filename, "wb+")
-        f.write(response.read())
+        f.write(response.data)
         f.close()
         bot.sendPhoto(chat_id, open(photo_filename, "rb"), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
         os.remove(photo_filename)
@@ -167,10 +171,9 @@ class ChatUser(telepot.helper.ChatHandler):
         if interval > 0:
             if type(job) is Job:
                 job.remove()
-            urls = [ cameras[c]["snapshot_url"] for c in self.cameras.keys() ]
             job = scheduler.add_job(make_snapshot, "interval",
                                     seconds=interval,
-                                    kwargs={"bot": self.bot, "chat_id": chat_id, "urls": urls})
+                                    kwargs={"bot": self.bot, "chat_id": chat_id, "cameras": self.cameras.values()})
             scheduler.resume()
 
     def on__idle(self, event):
@@ -204,10 +207,9 @@ class ChatUser(telepot.helper.ChatHandler):
         print("Callback Query:", query_id, from_id, query_data)
         if query_data in self.cameras.keys():
             self.bot.answerCallbackQuery(query_id,
-                                         text="Schnappschuss von deiner Kamera ‘{}‘".format(query_data))
+                                         text="Schnappschuss von deiner Kamera '{}'".format(query_data))
             if query_data in self.cameras.keys():
-                url = cameras[query_data]["snapshot_url"]
-                make_snapshot([url], self.bot, from_id)
+                make_snapshot([cameras[query_data]], self.bot, from_id)
                 self.send_snapshot_menu()
         elif query_data == "disable":
             alerting_on = False
@@ -257,10 +259,9 @@ class ChatUser(telepot.helper.ChatHandler):
                                 scheduler.resume()
                                 if type(job) is Job:
                                     job.remove()
-                                urls = [ cameras[c]["snapshot_url"] for c in self.cameras.keys() ]
                                 job = scheduler.add_job(make_snapshot, "interval",
                                                         seconds=interval,
-                                                        kwargs={"bot": self.bot, "chat_id": chat_id, "urls": urls})
+                                                        kwargs={"bot": self.bot, "chat_id": chat_id, "cameras": self.cameras.values()})
                                 self.sender.sendMessage("Schnappschussintervall ist auf {} Sekunden eingestellt."
                                                         .format(interval))
                             else:
