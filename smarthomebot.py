@@ -42,23 +42,26 @@ class easydict(dict):
 
 def make_snapshot(cameras, bot, chat_id):
     for camera in cameras:
-        handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
         response = None
         try:
             http = urllib3.PoolManager()
             headers = None
             if "username" in camera.keys() and "password" in camera.keys():
                 headers = urllib3.util.make_headers(basic_auth="{}:{}".format(camera["username"], camera["password"]))
-            response = http.request("GET", camera["snapshot_url"], headers=headers)
+            response = http.request("GET", camera["snapshot_url"],
+                                    headers=headers)
         except urllib3.exceptions.HTTPError as e:
             bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(camera["snapshot_url"], e.reason))
         if response is None:
             return
-        f = open(photo_filename, "wb+")
-        f.write(response.data)
-        f.close()
-        bot.sendPhoto(chat_id, open(photo_filename, "rb"), caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-        os.remove(photo_filename)
+        if response.data:
+            handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
+            f = open(photo_filename, "wb+")
+            f.write(response.data)
+            f.close()
+            bot.sendPhoto(chat_id, open(photo_filename, "rb"),
+                          caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+            os.remove(photo_filename)
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -68,7 +71,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.bot = kwargs["bot"]
         self.verbose = kwargs["verbose"]
         self.image_folder = kwargs["image_folder"]
-        self.authorized_users = kwargs["authorized_users"] or []
+        self.authorized_users = kwargs["authorized_users"]
         self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
         self.max_photo_size = kwargs["max_photo_size"]
         self.do_send_photos = kwargs["send_photos"]
@@ -122,17 +125,12 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 [self.path_to_ffmpeg,
                  "-y",
                  "-loglevel",
-                 "panic",
-                 "-i",
-                 src_video_filename,
-                 "-vf",
-                 "scale=480:320",
+                 "panic", "-i", src_video_filename,
+                 "-vf", "scale=480:320",
                  "-movflags",
                  "+faststart",
-                 "-c:v",
-                 "libx264",
-                 "-preset",
-                 "fast",
+                 "-c:v", "libx264",
+                 "-preset", "fast",
                  dst_video_filename],
                 shell=False)
             for user in self.authorized_users:
@@ -160,6 +158,7 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
+        print(content_type, chat_type, chat_id)
         self.on_chat_message(initial_msg)
         self.init_scheduler(chat_id)
         return True
@@ -175,7 +174,9 @@ class ChatUser(telepot.helper.ChatHandler):
                 job.remove()
             job = scheduler.add_job(make_snapshot, "interval",
                                     seconds=interval,
-                                    kwargs={"bot": self.bot, "chat_id": chat_id, "cameras": self.cameras.values()})
+                                    kwargs={"bot": self.bot,
+                                            "chat_id": chat_id,
+                                            "cameras": self.cameras.values()})
             scheduler.resume()
 
     def on__idle(self, event):
@@ -197,7 +198,8 @@ class ChatUser(telepot.helper.ChatHandler):
         kbd = [
             InlineKeyboardButton(text=chr(0x1F4F7) + "Schnappschuss",
                                  callback_data="snapshot"),
-            InlineKeyboardButton(text=[chr(0x25B6) + chr(0xFE0F) + "Alarme ein", chr(0x23F9) + "Alarme aus"][alerting_on],
+            InlineKeyboardButton(text=[chr(0x25B6) + chr(0xFE0F) + "Alarme ein",
+                                       chr(0x23F9) + "Alarme aus"][alerting_on],
                                  callback_data=["enable", "disable"][alerting_on])
             ]
         keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
@@ -263,7 +265,9 @@ class ChatUser(telepot.helper.ChatHandler):
                                     job.remove()
                                 job = scheduler.add_job(make_snapshot, "interval",
                                                         seconds=interval,
-                                                        kwargs={"bot": self.bot, "chat_id": chat_id, "cameras": self.cameras.values()})
+                                                        kwargs={"bot": self.bot,
+                                                                "chat_id": chat_id,
+                                                                "cameras": self.cameras.values()})
                                 self.sender.sendMessage("Schnappschussintervall ist auf {} Sekunden eingestellt."
                                                         .format(interval))
                             else:
