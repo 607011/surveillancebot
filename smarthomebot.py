@@ -272,10 +272,13 @@ class ChatUser(telepot.helper.ChatHandler):
                                                         .format(interval))
                             else:
                                 scheduler.pause()
-                                self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind deaktiviert.")
+                                self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind nun deaktiviert.")
                         else:
-                            if settings[chat_id]["snapshot"]["interval"] == {}:
+                            if type(settings[chat_id]["snapshot"]["interval"]) is not int:
                                 self.sender.sendMessage("Schnappschussintervall wurde noch nicht eingestellt.")
+                            elif settings[chat_id]["snapshot"]["interval"] < 1:
+                                self.sender.sendMessage("Aufnehmen von Schnappschüssen in Intervallen "
+                                                        "ist derzeit deaktiviert.")
                             else:
                                 self.sender.sendMessage("Schnappschussintervall ist derzeit auf "
                                                         "{} Sekunden eingestellt."
