@@ -335,9 +335,9 @@ def main(arg):
         print("Error: config file '{}' not found: {}"
               .format(config_filename))
         return
-    except json.decoder.JSONDecodeError as e:
-        print("Error: invalid config file '{}': {} in line {} column {} (position {})"
-              .format(config_filename, e.msg, e.lineno, e.colno, e.pos))
+    except ValueError as e:
+        print("Error: invalid config file '{}': {}"
+              .format(config_filename, e))
         return
 
     if "telegram_bot_token" in config.keys():
