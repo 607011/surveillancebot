@@ -42,40 +42,42 @@ class easydict(dict):
 
 def make_snapshot(cameras, bot, chat_id):
     for camera in cameras:
-        response = None
-        try:
-            http = urllib3.PoolManager()
-            headers = None
-            if "username" in camera.keys() and "password" in camera.keys():
-                headers = urllib3.util.make_headers(basic_auth="{}:{}".format(camera["username"], camera["password"]))
-            response = http.request("GET", camera["snapshot_url"],
-                                    headers=headers)
-        except urllib3.exceptions.HTTPError as e:
-            bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(camera["snapshot_url"], e.reason))
-        if response is None:
-            return
-        if response.data:
-            handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
-            f = open(photo_filename, "wb+")
-            f.write(response.data)
-            f.close()
-            bot.sendPhoto(chat_id, open(photo_filename, "rb"),
-                          caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-            os.remove(photo_filename)
+        if camera.get("snapshot_url"):
+            response = None
+            try:
+                http = urllib3.PoolManager()
+                headers = None
+                if camera.get("username") and camera.get("password"):
+                    headers = urllib3.util.make_headers(basic_auth="{}:{}".format(camera["username"], camera["password"]))
+                response = http.request("GET", camera["snapshot_url"],
+                                        headers=headers)
+            except urllib3.exceptions.HTTPError as e:
+                bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(camera["snapshot_url"], e.reason))
+            if response is None:
+                return
+            if response.data:
+                handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
+                f = open(photo_filename, "wb+")
+                f.write(response.data)
+                f.close()
+                bot.sendPhoto(chat_id,
+                              open(photo_filename, "rb"),
+                              caption=datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+                os.remove(photo_filename)
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
 
     def __init__(self, *args, **kwargs):
         super(FileSystemEventHandler, self).__init__()
-        self.bot = kwargs["bot"]
-        self.verbose = kwargs["verbose"]
-        self.image_folder = kwargs["image_folder"]
-        self.authorized_users = kwargs["authorized_users"]
-        self.path_to_ffmpeg = kwargs["path_to_ffmpeg"]
-        self.max_photo_size = kwargs["max_photo_size"]
-        self.do_send_photos = kwargs["send_photos"]
-        self.do_send_videos = kwargs["send_videos"]
+        self.bot = kwargs.get("bot")
+        self.verbose = kwargs.get("verbose", False)
+        self.image_folder = kwargs.get("image_folder")
+        self.authorized_users = kwargs.get("authorized_users", [])
+        self.path_to_ffmpeg = kwargs.get("path_to_ffmpeg")
+        self.max_photo_size = kwargs.get("max_photo_size")
+        self.do_send_videos = kwargs.get("send_videos", True)
+        self.do_send_photos = kwargs.get("send_photos", False)
 
     def dispatch(self, event):
         if event.event_type == "created" and not event.is_directory:
@@ -126,7 +128,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                  "-y",
                  "-loglevel",
                  "panic", "-i", src_video_filename,
-                 "-vf", "scale=480:320",
+                 "-vf", "scale=640:-1",
                  "-movflags",
                  "+faststart",
                  "-c:v", "libx264",
@@ -150,15 +152,12 @@ class ChatUser(telepot.helper.ChatHandler):
     def __init__(self, *args, **kwargs):
         global verbose, cameras
         super(ChatUser, self).__init__(*args, **kwargs)
-        self.timeout_secs = 10
-        if "timeout" in kwargs.keys():
-            self.timeout_secs = kwargs["timeout"]
+        self.timeout_secs = kwargs.get("timeout")
         self.verbose = verbose
         self.cameras = cameras
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
-        print(content_type, chat_type, chat_id)
         self.on_chat_message(initial_msg)
         self.init_scheduler(chat_id)
         return True
@@ -172,16 +171,19 @@ class ChatUser(telepot.helper.ChatHandler):
         if interval > 0:
             if type(job) is Job:
                 job.remove()
-            job = scheduler.add_job(make_snapshot, "interval",
-                                    seconds=interval,
-                                    kwargs={"bot": self.bot,
-                                            "chat_id": chat_id,
-                                            "cameras": self.cameras.values()})
+            job = scheduler.add_job(
+                make_snapshot, "interval",
+                seconds=interval,
+                kwargs={"bot": self.bot,
+                        "chat_id": chat_id,
+                        "cameras": self.cameras.values()})
             scheduler.resume()
 
     def on__idle(self, event):
-        ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
-        self.sender.sendMessage(ChatUser.IdleMessages[ridx])
+        global alerting_on
+        if alerting_on:
+            ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
+            self.sender.sendMessage(ChatUser.IdleMessages[ridx])
 
     def on_close(self, msg):
         if self.verbose:
@@ -189,7 +191,8 @@ class ChatUser(telepot.helper.ChatHandler):
         return True
 
     def send_snapshot_menu(self):
-        kbd = [ InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c) for c in self.cameras.keys() ]
+        kbd = [ InlineKeyboardButton(text=self.cameras[c]["name"], callback_data=c)
+                for c in self.cameras.keys() ]
         keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
         self.sender.sendMessage("Schnappschuss anzeigen von:", reply_markup=keyboard)
 
@@ -209,12 +212,11 @@ class ChatUser(telepot.helper.ChatHandler):
         global alerting_on
         query_id, from_id, query_data = telepot.glance(msg, flavor="callback_query")
         print("Callback Query:", query_id, from_id, query_data)
-        if query_data in self.cameras.keys():
+        if self.cameras.get(query_data):
             self.bot.answerCallbackQuery(query_id,
                                          text="Schnappschuss von deiner Kamera '{}'".format(query_data))
-            if query_data in self.cameras.keys():
-                make_snapshot([cameras[query_data]], self.bot, from_id)
-                self.send_snapshot_menu()
+            make_snapshot([self.cameras[query_data]], self.bot, from_id)
+            self.send_snapshot_menu()
         elif query_data == "disable":
             alerting_on = False
             self.bot.answerCallbackQuery(query_id, text="Alarme wurden ausgeschaltet.")
@@ -300,6 +302,7 @@ class ChatUser(telepot.helper.ChatHandler):
             else:
                 self.sender.sendMessage("Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.")
         else:
+            pprint(msg)
             self.sender.sendMessage("Dein '{}' ist im Nirwana gelandet ...".format(content_type))
 
 
@@ -316,18 +319,10 @@ alerting_on = True
 
 def main(arg):
     global bot, authorized_users, cameras, verbose, settings, scheduler, job
-    path_to_ffmpeg = None
-    timeout_secs = 10 * 60
-    image_folder = "/home/ftp-upload"
-    max_photo_size = 1280
-    telegram_bot_token = None
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
-    do_send_videos = True
-    do_send_photos = False
     if APPNAME in shelf.keys():
         settings = easydict(shelf[APPNAME])
-
     try:
         with open(config_filename, "r") as config_file:
             config = json.load(config_file)
@@ -339,33 +334,22 @@ def main(arg):
         print("Error: invalid config file '{}': {}"
               .format(config_filename, e))
         return
-
-    if "telegram_bot_token" in config.keys():
-        telegram_bot_token = config["telegram_bot_token"]
+    telegram_bot_token = config.get("telegram_bot_token")
     if not telegram_bot_token:
         print("Error: config file doesn't contain a `telegram_bot_token`")
         return
-    if "authorized_users" in config.keys():
-        authorized_users = config["authorized_users"]
+    authorized_users = config.get("authorized_users")
     if type(authorized_users) is not list or len(authorized_users) == 0:
         print("Error: config file doesn't contain an `authorized_users` list")
         return
-    if "timeout_secs" in config.keys():
-        timeout_secs = config["timeout_secs"]
-    if "cameras" in config.keys():
-        cameras = config["cameras"]
-    if "image_folder" in config.keys():
-        image_folder = config["image_folder"]
-    if "path_to_ffmpeg" in config.keys():
-        path_to_ffmpeg = config["path_to_ffmpeg"]
-    if "max_photo_size" in config.keys():
-        max_photo_size = config["max_photo_size"]
-    if "verbose" in config.keys():
-        verbose = config["verbose"]
-    if "send_videos" in config.keys():
-        do_send_videos = config["send_videos"]
-    if "send_photos" in config.keys():
-        do_send_photos = config["send_photos"]
+    timeout_secs = config.get("timeout_secs", 10 * 60)
+    cameras = config.get("cameras", [])
+    image_folder = config.get("image_folder", "/home/ftp-upload")
+    path_to_ffmpeg = config.get("path_to_ffmpeg")
+    max_photo_size = config.get("max_photo_size", 1280)
+    verbose = config.get("verbose")
+    send_videos = config.get("send_videos", True)
+    send_photos = config.get("send_photos", False)
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types="private"),
                                                            create_open,
@@ -381,8 +365,8 @@ def main(arg):
         authorized_users=authorized_users,
         path_to_ffmpeg=path_to_ffmpeg,
         max_photo_size=max_photo_size,
-        send_photos=do_send_photos,
-        send_videos=do_send_videos,
+        send_photos=send_photos,
+        send_videos=send_videos,
         bot=bot)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=True)

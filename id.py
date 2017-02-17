@@ -12,7 +12,7 @@ def handle(msg):
     content_type, chat_type, chat_id = telepot.glance(msg)
     print("Nachricht von ID {}".format(chat_id))
     if content_type == "text":
-        bot.sendMessage(chat_id, msg["text"])
+        bot.sendMessage(chat_id, "Deine ID: {}".format(chat_id))
 
 
 def main(api_key):
