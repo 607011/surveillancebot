@@ -241,10 +241,10 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "und sende dir ein Video von dem Vorfall.\n",
                                         parse_mode="Markdown")
                 self.send_main_menu()
-            elif msg_text.startswith("/enable"):
+            elif msg_text.startswith("/enable") or any(cmd in msg_text for cmd in ["on", "go", "1", "ein"]):
                 alerting_on = True
                 self.sender.sendMessage("Alarme ein.")
-            elif msg_text.startswith("/disable"):
+            elif msg_text.startswith("/disable") or any(cmd in msg_text for cmd in ["off", "stop", "0", "aus"]):
                 alerting_on = False
                 self.sender.sendMessage("Alarme aus.")
             elif msg_text.startswith("/toggle"):
