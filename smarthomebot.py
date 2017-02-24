@@ -29,6 +29,8 @@ from watchdog.events import FileSystemEventHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.job import Job
 from PIL import Image
+from pyowm import OpenWeatherMap
+import json
 
 
 APPNAME = "smarthomebot"
@@ -38,6 +40,19 @@ class easydict(dict):
     def __missing__(self, key):
         self[key] = easydict()
         return self[key]
+
+
+def send_weather_forecast(bot, chat_id):
+    global owm_api_key
+    if type(owm_api_key) is str:
+        owm_client = OpenWeatherMap(owm_api_key)
+        try:
+            response = json.parse(owm_client.current())
+        except:
+            print("error in send_weather_forecast()")
+        bot.sendMessage(chat_id, "send_weather_forecast()")
+    else:
+        bot.sendMessage(chat_id, "Invalid OpenWeatherMap configuration: API key missing.")
 
 
 def make_snapshot(cameras, bot, chat_id):
@@ -155,29 +170,37 @@ class ChatUser(telepot.helper.ChatHandler):
         self.timeout_secs = kwargs.get("timeout")
         self.verbose = verbose
         self.cameras = cameras
+        self.snapshot_job = None
+        self.owm_job = None
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.on_chat_message(initial_msg)
         self.init_scheduler(chat_id)
-        return True
 
     def init_scheduler(self, chat_id):
-        global settings, scheduler, job
+        global settings, scheduler
         interval = settings[chat_id]["snapshot"]["interval"]
         if type(interval) is not int:
             interval = 0
             settings[chat_id]["snapshot"]["interval"] = interval
         if interval > 0:
-            if type(job) is Job:
-                job.remove()
-            job = scheduler.add_job(
-                make_snapshot, "interval",
-                seconds=interval,
-                kwargs={"bot": self.bot,
-                        "chat_id": chat_id,
-                        "cameras": self.cameras.values()})
-            scheduler.resume()
+            if type(self.snapshot_job) is Job:
+                self.snapshot_job.remove()
+                self.snapshot_job = scheduler.add_job(
+                    make_snapshot, "interval",
+                    seconds=interval,
+                    kwargs={"bot": self.bot,
+                            "chat_id": chat_id,
+                            "cameras": self.cameras.values()})
+        else:
+            if type(self.snapshot_job) is Job:
+                self.snapshot_job.remove()
+        self.owm_job = scheduler.add_job(
+            send_weather_forecast, trigger="cron",
+            hour=6,
+            kwargs={"bot": self.bot,
+                    "chat_id": chat_id})
 
     def on__idle(self, event):
         global alerting_on
@@ -188,6 +211,10 @@ class ChatUser(telepot.helper.ChatHandler):
     def on_close(self, msg):
         if self.verbose:
             print("on_close() called. {}".format(msg))
+        if type(self.snapshot_job) is Job:
+            self.snapshot_job.remove()
+        if type(self.owm_job) is Job:
+            self.owm_job.remove()
         return True
 
     def send_snapshot_menu(self):
@@ -230,7 +257,7 @@ class ChatUser(telepot.helper.ChatHandler):
             self.send_snapshot_menu()
 
     def on_chat_message(self, msg):
-        global scheduler, job, settings, alerting_on
+        global scheduler, settings, alerting_on
         content_type, chat_type, chat_id = telepot.glance(msg)
         if content_type == "text":
             if self.verbose:
@@ -262,19 +289,21 @@ class ChatUser(telepot.helper.ChatHandler):
                             interval = int(c[1])
                             settings[chat_id]["snapshot"]["interval"] = interval
                             if interval > 0:
-                                scheduler.resume()
-                                if type(job) is Job:
-                                    job.remove()
-                                job = scheduler.add_job(make_snapshot, "interval",
-                                                        seconds=interval,
-                                                        kwargs={"bot": self.bot,
-                                                                "chat_id": chat_id,
-                                                                "cameras": self.cameras.values()})
-                                self.sender.sendMessage("Schnappschussintervall ist auf {} Sekunden eingestellt."
+                                if type(snapshot_job) is Job:
+                                    snapshot_job.remove()
+                                snapshot_job = scheduler.add_job(make_snapshot, "interval",
+                                                                 seconds=interval,
+                                                                 kwargs={"bot": self.bot,
+                                                                         "chat_id": chat_id,
+                                                                         "cameras": self.cameras.values()})
+                                self.sender.sendMessage("Schnappschüsse sind aktiviert. Das Intervall ist auf {} Sekunden eingestellt."
                                                         .format(interval))
                             else:
-                                scheduler.pause()
-                                self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind nun deaktiviert.")
+                                if type(snapshot_job) is Job:
+                                    snapshot_job.remove()
+                                    self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind nun deaktiviert.")
+                                else:
+                                    self.sender.sendMessage("Es waren keine zeitgesteuerte Schnappschüsse aktiviert.")
                         else:
                             if type(settings[chat_id]["snapshot"]["interval"]) is not int:
                                 self.sender.sendMessage("Schnappschussintervall wurde noch nicht eingestellt.")
@@ -312,13 +341,13 @@ cameras = None
 verbose = False
 settings = easydict()
 scheduler = BackgroundScheduler()
-job = None
 bot = None
 alerting_on = True
+owm_api_key = None
 
 
 def main(arg):
-    global bot, authorized_users, cameras, verbose, settings, scheduler, job
+    global bot, authorized_users, cameras, verbose, settings, scheduler, owm_api_key
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
     if APPNAME in shelf.keys():
@@ -350,6 +379,7 @@ def main(arg):
     verbose = config.get("verbose")
     send_videos = config.get("send_videos", True)
     send_photos = config.get("send_photos", False)
+    owm_api_key = config.get("openweathermap", {}).get("api_key")
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types="private"),
                                                            create_open,
@@ -358,7 +388,7 @@ def main(arg):
     ])
     if verbose:
        print("Monitoring {} ...".format(image_folder))
-    scheduler.start(paused=True)
+    scheduler.start()
     event_handler = UploadDirectoryEventHandler(
         image_folder=image_folder,
         verbose=verbose,
@@ -383,7 +413,6 @@ def main(arg):
     shelf.sync()
     shelf.close()
     scheduler.shutdown()
-
 
 if __name__ == "__main__":
     main(sys.argv)

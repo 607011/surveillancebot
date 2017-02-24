@@ -1,0 +1,3 @@
+[submodule "pyowm"]
+	path = pyowm
+	url = git@github.com:ola-ct/pyowm-micro.git
