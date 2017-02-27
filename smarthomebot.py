@@ -42,14 +42,21 @@ class easydict(dict):
 
 
 def send_weather_forecast(bot, chat_id):
-    global owm_api_key
-    if type(owm_api_key) is str:
-        owm_client = OpenWeatherMap(owm_api_key)
+    global owm
+    if owm:
+        msg = "*Wettervorhersage für Burgdorf*\n\n"
         try:
-            response = json.parse(owm_client.current())
-        except:
-            print("error in send_weather_forecast()")
-        bot.sendMessage(chat_id, "send_weather_forecast()")
+            for forecast in owm.forecast_daily(2941405, 7):
+                msg += "*{}*\n{:s}, {:.0f} – {:.0f} °C, wind {:.0f} km/h from {:s}\n\n" \
+                    .format(forecast.date.strftime("%a %d.%m."),
+                            forecast.description,
+                            forecast.temp_min, forecast.temp_max,
+                            forecast.wind_speed,
+                            degree_to_meteo(forecast.wind_degrees))
+            bot.sendMessage(msg, parse_mode="Markdown")
+        except telepot.exception.TooManyRequestsError as e:
+            bot.sendMessage("Fehler beim Abholen der Wetterdaten: {}".format(e.description))
+
     else:
         bot.sendMessage(chat_id, "Invalid OpenWeatherMap configuration: API key missing.")
 
@@ -181,7 +188,7 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
-        self.on_chat_message(initial_msg)
+        # self.on_chat_message(initial_msg)
         self.init_scheduler(chat_id)
 
     def init_scheduler(self, chat_id):
@@ -202,6 +209,7 @@ class ChatUser(telepot.helper.ChatHandler):
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
+        # TODO: let the user choose time of day (`hour=`)
         self.owm_job = scheduler.add_job(send_weather_forecast,
                                          trigger="cron", hour=6,
                                          kwargs={"bot": self.bot, "chat_id": chat_id})
@@ -274,16 +282,16 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "und sende dir ein Video von dem Vorfall.\n",
                                         parse_mode="Markdown")
                 self.send_main_menu()
-            elif msg_text.startswith("/enable") or any(cmd.lower() in msg_text for cmd in ["on", "go", "1", "ein"]):
+            elif msg_text.startswith("/enable") or any(cmd in msg_text.lower() for cmd in ["on", "go", "1", "ein"]):
                 alerting_on = True
                 self.sender.sendMessage("Alarme ein.")
-            elif msg_text.startswith("/disable") or any(cmd.lower() in msg_text for cmd in ["off", "stop", "0", "aus"]):
+            elif msg_text.startswith("/disable") or any(cmd in msg_text.lower() for cmd in ["off", "stop", "0", "aus"]):
                 alerting_on = False
                 self.sender.sendMessage("Alarme aus.")
             elif msg_text.startswith("/toggle"):
                 alerting_on = not alerting_on
                 self.sender.sendMessage("Alarme sind nun {}geschaltet.".format(["aus", "ein"][alerting_on]))
-            elif msg_text.startswith("/weather"):
+            elif msg_text.startswith("/weather") or  msg_text.startswith("wetter") :
                 c = msg_text.split()[1:]
                 subcmd = c[0].lower() if len(c) > 0 else None
                 if subcmd is None or subcmd == "current":
@@ -301,21 +309,11 @@ class ChatUser(telepot.helper.ChatHandler):
                                 w.sunrise.strftime("%H:%M"),
                                 w.sunset.strftime("%H:%M"))
                     self.sender.sendMessage(msg, parse_mode="Markdown")
-                elif subcmd == "simple":
+                elif subcmd == "simple" or subcmd == "einfach":
+                    send_weather_forecast(self.sender, chat_id)
+                elif subcmd in ["detailed", "3h", "detail"]:
                     msg = "*Wettervorhersage für Burgdorf*\n\n"
-                    try:
-                        for forecast in owm.forecast_daily(2941405, 7):
-                            msg += "*{}*\n{:s}, {:.0f} – {:.0f} °C, wind {:.0f} km/h from {:s}\n\n"\
-                                .format(forecast.date.strftime("%a %d.%m."),
-                                        forecast.description,
-                                        forecast.temp_min, forecast.temp_max,
-                                        forecast.wind_speed,
-                                        degree_to_meteo(forecast.wind_degrees))
-                        self.sender.sendMessage(msg, parse_mode="Markdown")
-                    except telepot.exception.TooManyRequestsError as e:
-                        self.sender.sendMessage("Fehler beim Abholen der Wetterdaten: {}".format(e.description))
-                elif subcmd in ["detailed", "3h"]:
-                    msg = "*Wettervorhersage für Burgdorf*\n\n"
+                    # TODO: send a message for each day
                     try:
                         for forecast in owm.forecast(2941405):
                             msg += "*{}*\n{:s}, {:.0f} – {:.0f} °C, wind {:.0f} km/h from {:s}\n\n"\

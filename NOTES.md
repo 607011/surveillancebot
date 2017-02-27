@@ -2,5 +2,5 @@
 
  - Raspi: room temperature measurement
  - Raspi: collect and evaluate NMEA data
- - present weather forecast every morning (e.g. via openweathermap.org API)
+ - let the user choose the location to present weather forecasts for
 
