@@ -29,8 +29,7 @@ from watchdog.events import FileSystemEventHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.job import Job
 from PIL import Image
-from pyowm import OpenWeatherMap
-import json
+from pyowm.openweathermap import OpenWeatherMap, degree_to_meteo
 
 
 APPNAME = "smarthomebot"
@@ -55,22 +54,29 @@ def send_weather_forecast(bot, chat_id):
         bot.sendMessage(chat_id, "Invalid OpenWeatherMap configuration: API key missing.")
 
 
+def get_image_from_url(url, username, password):
+    error_msg = None
+    response = None
+    try:
+        http = urllib3.PoolManager()
+        headers = urllib3.util.make_headers(basic_auth="{}:{}".format(username, password)) if username and password else None
+        response = http.request("GET", url, headers=headers)
+    except urllib3.exceptions.HTTPError as e:
+        error_msg = e.reason
+    return response, error_msg
+
+
 def make_snapshot(cameras, bot, chat_id):
     for camera in cameras:
         if camera.get("snapshot_url"):
-            response = None
-            try:
-                http = urllib3.PoolManager()
-                headers = None
-                if camera.get("username") and camera.get("password"):
-                    headers = urllib3.util.make_headers(basic_auth="{}:{}".format(camera["username"], camera["password"]))
-                response = http.request("GET", camera["snapshot_url"],
-                                        headers=headers)
-            except urllib3.exceptions.HTTPError as e:
-                bot.sendMessage(chat_id, "Fehler beim Abrufen des Schnappschusses via {}: {}".format(camera["snapshot_url"], e.reason))
-            if response is None:
-                return
-            if response.data:
+            response, error_msg = get_image_from_url(camera.get("snapshot_url"),
+                                                     camera.get("username"),
+                                                     camera.get("password"))
+            if error_msg:
+                bot.sendMessage(chat_id,
+                                "Fehler beim Abrufen des Schnappschusses via {}: {}"
+                                .format(camera.get("snapshot_url"), error_msg))
+            elif response and response.data:
                 handle, photo_filename = mkstemp(prefix="snapshot-", suffix=".jpg")
                 f = open(photo_filename, "wb+")
                 f.write(response.data)
@@ -196,11 +202,9 @@ class ChatUser(telepot.helper.ChatHandler):
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
-        self.owm_job = scheduler.add_job(
-            send_weather_forecast, trigger="cron",
-            hour=6,
-            kwargs={"bot": self.bot,
-                    "chat_id": chat_id})
+        self.owm_job = scheduler.add_job(send_weather_forecast,
+                                         trigger="cron", hour=6,
+                                         kwargs={"bot": self.bot, "chat_id": chat_id})
 
     def on__idle(self, event):
         global alerting_on
@@ -270,37 +274,82 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "und sende dir ein Video von dem Vorfall.\n",
                                         parse_mode="Markdown")
                 self.send_main_menu()
-            elif msg_text.startswith("/enable") or any(cmd in msg_text for cmd in ["on", "go", "1", "ein"]):
+            elif msg_text.startswith("/enable") or any(cmd.lower() in msg_text for cmd in ["on", "go", "1", "ein"]):
                 alerting_on = True
                 self.sender.sendMessage("Alarme ein.")
-            elif msg_text.startswith("/disable") or any(cmd in msg_text for cmd in ["off", "stop", "0", "aus"]):
+            elif msg_text.startswith("/disable") or any(cmd.lower() in msg_text for cmd in ["off", "stop", "0", "aus"]):
                 alerting_on = False
                 self.sender.sendMessage("Alarme aus.")
             elif msg_text.startswith("/toggle"):
                 alerting_on = not alerting_on
                 self.sender.sendMessage("Alarme sind nun {}geschaltet.".format(["aus", "ein"][alerting_on]))
+            elif msg_text.startswith("/weather"):
+                c = msg_text.split()[1:]
+                subcmd = c[0].lower() if len(c) > 0 else None
+                if subcmd is None or subcmd == "current":
+                    w = owm.current(2941405)
+                    msg = "*Aktuelles Wetter in Burgdorf*\n\n"\
+                        "*{:s}* {:.0f} °C ({:.0f} – {:.0f})\n"\
+                        "wind {:.0f} km/h from {:s}\n"\
+                        "{}% humidity\n"\
+                        "sunrise {} / sunset {}\n\n" \
+                        .format(w.description,
+                                w.temp, w.temp_min, w.temp_max,
+                                w.wind_speed,
+                                degree_to_meteo(w.wind_degrees),
+                                w.humidity,
+                                w.sunrise.strftime("%H:%M"),
+                                w.sunset.strftime("%H:%M"))
+                    self.sender.sendMessage(msg, parse_mode="Markdown")
+                elif subcmd == "simple":
+                    msg = "*Wettervorhersage für Burgdorf*\n\n"
+                    try:
+                        for forecast in owm.forecast_daily(2941405, 7):
+                            msg += "*{}*\n{:s}, {:.0f} – {:.0f} °C, wind {:.0f} km/h from {:s}\n\n"\
+                                .format(forecast.date.strftime("%a %d.%m."),
+                                        forecast.description,
+                                        forecast.temp_min, forecast.temp_max,
+                                        forecast.wind_speed,
+                                        degree_to_meteo(forecast.wind_degrees))
+                        self.sender.sendMessage(msg, parse_mode="Markdown")
+                    except telepot.exception.TooManyRequestsError as e:
+                        self.sender.sendMessage("Fehler beim Abholen der Wetterdaten: {}".format(e.description))
+                elif subcmd in ["detailed", "3h"]:
+                    msg = "*Wettervorhersage für Burgdorf*\n\n"
+                    try:
+                        for forecast in owm.forecast(2941405):
+                            msg += "*{}*\n{:s}, {:.0f} – {:.0f} °C, wind {:.0f} km/h from {:s}\n\n"\
+                                .format(forecast.date.strftime("%a %d.%m."),
+                                        forecast.description,
+                                        forecast.temp_min, forecast.temp_max,
+                                        forecast.wind_speed,
+                                        degree_to_meteo(forecast.wind_degrees))
+                        self.sender.sendMessage(msg, parse_mode="Markdown")
+                    except telepot.exception.TooManyRequestsError as e:
+                        self.sender.sendMessage("Fehler beim Abholen der Wetterdaten: {}".format(e.description))
             elif msg_text.startswith("/snapshot"):
                 c = msg_text.split()[1:]
-                if len(c) == 0:
+                subcmd = c[0].lower() if len(c) > 0 else None
+                if subcmd is None:
                     self.send_snapshot_menu()
                 else:
-                    if c[0] == "interval":
+                    if subcmd == "interval":
                         if len(c) > 1:
                             interval = int(c[1])
                             settings[chat_id]["snapshot"]["interval"] = interval
                             if interval > 0:
-                                if type(snapshot_job) is Job:
-                                    snapshot_job.remove()
-                                snapshot_job = scheduler.add_job(make_snapshot, "interval",
-                                                                 seconds=interval,
-                                                                 kwargs={"bot": self.bot,
-                                                                         "chat_id": chat_id,
-                                                                         "cameras": self.cameras.values()})
+                                if type(self.snapshot_job) is Job:
+                                    self.snapshot_job.remove()
+                                self.snapshot_job = scheduler.add_job(make_snapshot, "interval",
+                                                                      seconds=interval,
+                                                                      kwargs={"bot": self.bot,
+                                                                              "chat_id": chat_id,
+                                                                              "cameras": self.cameras.values()})
                                 self.sender.sendMessage("Schnappschüsse sind aktiviert. Das Intervall ist auf {} Sekunden eingestellt."
                                                         .format(interval))
                             else:
-                                if type(snapshot_job) is Job:
-                                    snapshot_job.remove()
+                                if type(self.napshot_job) is Job:
+                                    self.snapshot_job.remove()
                                     self.sender.sendMessage("Zeitgesteuerte Schnappschüsse sind nun deaktiviert.")
                                 else:
                                     self.sender.sendMessage("Es waren keine zeitgesteuerte Schnappschüsse aktiviert.")
@@ -344,10 +393,11 @@ scheduler = BackgroundScheduler()
 bot = None
 alerting_on = True
 owm_api_key = None
+owm = None
 
 
 def main(arg):
-    global bot, authorized_users, cameras, verbose, settings, scheduler, owm_api_key
+    global bot, authorized_users, cameras, verbose, settings, scheduler, owm, owm_api_key
     config_filename = "smarthomebot-config.json"
     shelf = shelve.open(".smarthomebot.shelf")
     if APPNAME in shelf.keys():
@@ -380,6 +430,7 @@ def main(arg):
     send_videos = config.get("send_videos", True)
     send_photos = config.get("send_photos", False)
     owm_api_key = config.get("openweathermap", {}).get("api_key")
+    owm = OpenWeatherMap(owm_api_key) if owm_api_key else None
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types="private"),
                                                            create_open,
