@@ -56,6 +56,7 @@ def get_image_from_url(url, username, password):
 def make_snapshot(cameras, bot, chat_id):
     for camera in cameras:
         if camera.get('snapshot_url'):
+            bot.sendChatAction(chat_id, action='upload_photo')
             response, error_msg = \
                 get_image_from_url(camera.get('snapshot_url'),
                                    camera.get('username'),
@@ -131,6 +132,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if self.verbose:
             print('New video file detected: {}'.format(src_video_filename))
         if alerting_on and self.do_send_videos and self.path_to_ffmpeg:
+            self.bot.sendChatAction(chat_id, action='upload_video')
             handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
             if self.verbose:
                 print('Converting video {} to {} ...'.format(src_video_filename, dst_video_filename))
