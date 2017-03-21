@@ -20,6 +20,8 @@ import telepot
 import subprocess
 import shelve
 import urllib3
+import pygame
+import audiotools
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -32,6 +34,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
+APPVERSION = '1.0-AUDIO-DEV'
 
 
 class easydict(dict):
@@ -171,6 +174,8 @@ class ChatUser(telepot.helper.ChatHandler):
         self.verbose = verbose
         self.cameras = cameras
         self.snapshot_job = None
+        self.voice_processor = ChatUser.process_voice()
+        next(self.voice_processor)
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
@@ -255,7 +260,8 @@ class ChatUser(telepot.helper.ChatHandler):
                 pprint(msg)
             msg_text = msg['text']
             if msg_text.startswith('/start'):
-                self.sender.sendMessage('*Hallo, ich bin dein Heimüberwachungs-Bot!* ' + chr(0x1F916) + "\n\n"
+                self.sender.sendMessage('*Hallo, ich bin dein Heimüberwachungs-Bot!* [' + APPVERSION + ']' +
+                                        chr(0x1F916) + "\n\n"
                                         'Ich benachrichtige dich, wenn deine Webcams Bewegungen '
                                         'und laute Geräusche erkannt haben '
                                         'und sende dir ein Video von dem Vorfall.' + "\n",
@@ -325,9 +331,30 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage('Unbekanntes Kommando. /help für weitere Infos eintippen.')
             else:
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
+        elif content_type == 'voice':
+            file_id = msg['voice']['file_id']
+            self.voice_processor.send((file_id, chat_id))
         else:
-            pprint(msg)
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
+
+    @staticmethod
+    def process_voice():
+        global bot
+        while True:
+            file_id, chat_id = yield
+            if file_id is None or chat_id is None:
+                break
+            print(file_id, chat_id)
+            handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
+            handle, converted_audio_filename = mkstemp(prefix='audio-', suffix='.oga')
+            bot.sendChatAction(chat_id, action='upload_audio')
+            bot.download_file(file_id, voice_filename)
+            audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
+            pygame.mixer.music.load(converted_audio_filename)
+            pygame.mixer.music.play()
+            os.remove(converted_audio_filename)
+            os.remove(voice_filename)
+            bot.sendMessage(chat_id, 'Voice message played.')
 
 
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
@@ -338,10 +365,11 @@ settings = easydict()
 scheduler = BackgroundScheduler()
 bot = None
 alerting_on = True
+audio_on = True
 
 
-def main(arg):
-    global bot, authorized_users, cameras, verbose, settings, scheduler
+def main():
+    global bot, authorized_users, cameras, verbose, settings, scheduler, audio_on
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -365,6 +393,11 @@ def main(arg):
     if type(authorized_users) is not list or len(authorized_users) == 0:
         print('Error: config file doesn’t contain an `authorized_users` list')
         return
+
+    audio_on = config.get('audio', True)
+    if audio_on:
+        pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
+        pygame.mixer.init()
     timeout_secs = config.get('timeout_secs', 10 * 60)
     cameras = config.get('cameras', [])
     image_folder = config.get('image_folder', '/home/ftp-upload')
@@ -407,5 +440,6 @@ def main(arg):
     shelf.close()
     scheduler.shutdown()
 
+
 if __name__ == '__main__':
-    main(sys.argv)
+    main()
