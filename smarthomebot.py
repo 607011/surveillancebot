@@ -135,7 +135,8 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if self.verbose:
             print('New video file detected: {}'.format(src_video_filename))
         if alerting_on and self.do_send_videos and self.path_to_ffmpeg:
-            self.bot.sendChatAction(chat_id, action='upload_video')
+            for user in self.authorized_users:
+                self.bot.sendChatAction(user, action='upload_video')
             handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
             if self.verbose:
                 print('Converting video {} to {} ...'.format(src_video_filename, dst_video_filename))
@@ -377,13 +378,11 @@ def main():
     try:
         with open(config_filename, 'r') as config_file:
             config = json.load(config_file)
-    except FileNotFoundError:
-        print('Error: config file "{}" not found: {}'
-              .format(config_filename))
+    except FileNotFoundError as e:
+        print('Error: config file not found: {}'.format(e))
         return
     except ValueError as e:
-        print('Error: invalid config file "{}": {}'
-              .format(config_filename, e))
+        print('Error: invalid config file "{}": {}'.format(config_filename, e))
         return
     telegram_bot_token = config.get('telegram_bot_token')
     if not telegram_bot_token:
