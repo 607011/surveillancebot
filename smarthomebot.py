@@ -22,6 +22,7 @@ import shelve
 import urllib3
 import pygame
 import audiotools
+import threading
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -43,40 +44,105 @@ class easydict(dict):
         return self[key]
 
 
-def get_image_from_url(url, username, password):
-    error_msg = None
-    response = None
-    try:
-        http = urllib3.PoolManager()
-        headers = urllib3.util.make_headers(basic_auth='{}:{}'
-                                            .format(username, password)) if username and password else None
-        response = http.request('GET', url, headers=headers)
-    except urllib3.exceptions.HTTPError as e:
-        error_msg = e.reason
-    return response, error_msg
+class Snapshooter(threading.Thread):
+    def __init__(self, cameras, bot, chat_id, callback=None):
+        threading.Thread.__init__(self)
+        self.cameras = cameras
+        self.bot = bot
+        self.chat_id = chat_id
+        self.callback = callback
+
+    def run(self):
+        for camera in self.cameras:
+            if camera.get('snapshot_url'):
+                self.bot.sendChatAction(self.chat_id, action='upload_photo')
+                response, error_msg = \
+                    Snapshooter.get_image_from_url(camera.get('snapshot_url'),
+                                                   camera.get('username'),
+                                                   camera.get('password'))
+                if error_msg:
+                    self.bot.sendMessage(self.chat_id,
+                                    'Fehler beim Abrufen des Schnappschusses via {}: {}'
+                                    .format(camera.get('snapshot_url'), error_msg))
+                elif response and response.data:
+                    handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
+                    f = open(photo_filename, 'wb+')
+                    f.write(response.data)
+                    f.close()
+                    self.bot.sendPhoto(self.chat_id,
+                                       open(photo_filename, 'rb'),
+                                       caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+                    os.remove(photo_filename)
+        if self.callback:
+            self.callback()
+
+    @staticmethod
+    def get_image_from_url(url, username, password):
+        error_msg = None
+        response = None
+        try:
+            http = urllib3.PoolManager()
+            headers = urllib3.util.make_headers(basic_auth='{}:{}'
+                                                .format(username, password)) if username and password else None
+            response = http.request('GET', url, headers=headers)
+        except urllib3.exceptions.HTTPError as e:
+            error_msg = e.reason
+        return response, error_msg
 
 
-def make_snapshot(cameras, bot, chat_id):
-    for camera in cameras:
-        if camera.get('snapshot_url'):
-            bot.sendChatAction(chat_id, action='upload_photo')
-            response, error_msg = \
-                get_image_from_url(camera.get('snapshot_url'),
-                                   camera.get('username'),
-                                   camera.get('password'))
-            if error_msg:
-                bot.sendMessage(chat_id,
-                                'Fehler beim Abrufen des Schnappschusses via {}: {}'
-                                .format(camera.get('snapshot_url'), error_msg))
-            elif response and response.data:
-                handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
-                f = open(photo_filename, 'wb+')
-                f.write(response.data)
-                f.close()
-                bot.sendPhoto(chat_id,
-                              open(photo_filename, 'rb'),
-                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
-                os.remove(photo_filename)
+class VideoProcessor(threading.Thread):
+    def __init__(self, src_filename, bot, send_to_users, path_to_ffmpeg):
+        threading.Thread.__init__(self)
+        self.bot = bot
+        self.src_filename = src_filename
+        self.send_to_users = send_to_users
+        self.path_to_ffmpeg = path_to_ffmpeg
+
+    def run(self):
+        global verbose
+        self.bot.sendChatAction(chat_id, action='upload_video')
+        handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
+        if verbose:
+            print('Converting video {} to {} ...'.format(self.src_filename, dst_video_filename))
+        subprocess.call(
+            [self.path_to_ffmpeg,
+             '-y',
+             '-loglevel',
+             'panic', '-i', self.src_filename,
+             '-vf', 'scale=640:-1',
+             '-movflags',
+             '+faststart',
+             '-c:v', 'libx264',
+             '-preset', 'fast',
+             dst_video_filename],
+            shell=False)
+        for user in self.send_to_users:
+            self.bot.sendVideo(user, open(dst_video_filename, 'rb'),
+                               caption='{} ({})'.format(os.path.basename(self.src_filename),
+                                                        datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
+        os.remove(dst_video_filename)
+        os.remove(self.src_filename)
+
+
+class VoiceProcessor(threading.Thread):
+    def __init__(self, bot, file_id, chat_id):
+        threading.Thread.__init__(self)
+        self.bot = bot
+        self.file_id = file_id
+        self.chat_id = chat_id
+        print('VoiceProcessor.__init__(file_id="{}", chat_id={}) called.'.format(file_id, chat_id))
+
+    def run(self):
+        handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
+        handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
+        self.bot.sendChatAction(self.chat_id, action='upload_audio')
+        self.bot.download_file(self.file_id, voice_filename)
+        audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
+        pygame.mixer.music.load(converted_audio_filename)
+        pygame.mixer.music.play()
+        os.remove(converted_audio_filename)
+        os.remove(voice_filename)
+        self.bot.sendMessage(self.chat_id, 'Voice message played.')
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -87,9 +153,14 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         self.verbose = kwargs.get('verbose', False)
         self.authorized_users = kwargs.get('authorized_users', [])
         self.path_to_ffmpeg = kwargs.get('path_to_ffmpeg')
-        self.max_photo_size = kwargs.get('max_photo_size')
+        self.max_photo_size = kwargs.get('max_photo_size', 1280)
         self.do_send_videos = kwargs.get('send_videos', True)
         self.do_send_photos = kwargs.get('send_photos', False)
+        self.threads = []
+
+    def __del__(self):
+        for thr in self.threads:
+            thr.join()
 
     def on_created(self, event):
         if not event.is_directory:
@@ -111,6 +182,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             print('New photo file detected: {}'.format(src_photo_filename))
         dst_photo_filename = src_photo_filename
         if alerting_on and self.do_send_photos:
+            # TODO: move block to thread (???)
             if self.max_photo_size:
                 im = Image.open(src_photo_filename)
                 if im.width > self.max_photo_size or im.height > self.max_photo_size:
@@ -135,28 +207,11 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if self.verbose:
             print('New video file detected: {}'.format(src_video_filename))
         if alerting_on and self.do_send_videos and self.path_to_ffmpeg:
-            self.bot.sendChatAction(chat_id, action='upload_video')
-            handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
-            if self.verbose:
-                print('Converting video {} to {} ...'.format(src_video_filename, dst_video_filename))
-            subprocess.call(
-                [self.path_to_ffmpeg,
-                 '-y',
-                 '-loglevel',
-                 'panic', '-i', src_video_filename,
-                 '-vf', 'scale=640:-1',
-                 '-movflags',
-                 '+faststart',
-                 '-c:v', 'libx264',
-                 '-preset', 'fast',
-                 dst_video_filename],
-                shell=False)
-            for user in self.authorized_users:
-                self.bot.sendVideo(user, open(dst_video_filename, 'rb'),
-                                   caption='{} ({})'.format(os.path.basename(src_video_filename),
-                                                            datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
-            os.remove(dst_video_filename)
-        os.remove(src_video_filename)
+            video_processor = VideoProcessor(src_video_filename, self.bot, self.authorized_users, self.path_to_ffmpeg)
+            self.threads.append(video_processor)
+            video_processor.start()
+        else:
+            os.remove(src_video_filename)
 
 
 class ChatUser(telepot.helper.ChatHandler):
@@ -174,12 +229,15 @@ class ChatUser(telepot.helper.ChatHandler):
         self.verbose = verbose
         self.cameras = cameras
         self.snapshot_job = None
-        self.voice_processor = ChatUser.process_voice()
-        next(self.voice_processor)
+        self.threads = []
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.init_scheduler(chat_id)
+
+    def cleanup(self):
+        while len(self.threads) > 0:
+            self.threads.pop().join()
 
     def init_scheduler(self, chat_id):
         global settings, scheduler
@@ -205,12 +263,14 @@ class ChatUser(telepot.helper.ChatHandler):
         if alerting_on:
             ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
             self.sender.sendMessage(ChatUser.IdleMessages[ridx], parse_mode='Markdown')
+        self.cleanup()
 
     def on_close(self, msg):
         if self.verbose:
             print('on_close() called. {}'.format(msg))
         if type(self.snapshot_job) is Job:
             self.snapshot_job.remove()
+        self.cleanup()
         return True
 
     def send_snapshot_menu(self):
@@ -238,8 +298,10 @@ class ChatUser(telepot.helper.ChatHandler):
         if self.cameras.get(query_data):
             self.bot.answerCallbackQuery(query_id,
                                          text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
-            make_snapshot([self.cameras[query_data]], self.bot, from_id)
-            self.send_snapshot_menu()
+            snapshooter = Snapshooter([self.cameras[query_data]], self.bot, from_id,
+                                      lambda: self.send_snapshot_menu())
+            self.threads.append(snapshooter)
+            snapshooter.start()
         elif query_data == 'disable':
             alerting_on = False
             self.bot.answerCallbackQuery(query_id, text='Alarme wurden ausgeschaltet.')
@@ -333,28 +395,11 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
         elif content_type == 'voice':
             file_id = msg['voice']['file_id']
-            self.voice_processor.send((file_id, chat_id))
+            voice_processor = VoiceProcessor(self.bot, file_id, chat_id)
+            voice_processor.start()
+            self.threads.append(voice_processor)
         else:
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
-
-    @staticmethod
-    def process_voice():
-        global bot
-        while True:
-            file_id, chat_id = yield
-            if file_id is None or chat_id is None:
-                break
-            print(file_id, chat_id)
-            handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
-            handle, converted_audio_filename = mkstemp(prefix='audio-', suffix='.oga')
-            bot.sendChatAction(chat_id, action='upload_audio')
-            bot.download_file(file_id, voice_filename)
-            audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
-            pygame.mixer.music.load(converted_audio_filename)
-            pygame.mixer.music.play()
-            os.remove(converted_audio_filename)
-            os.remove(voice_filename)
-            bot.sendMessage(chat_id, 'Voice message played.')
 
 
 # global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
@@ -365,11 +410,10 @@ settings = easydict()
 scheduler = BackgroundScheduler()
 bot = None
 alerting_on = True
-audio_on = True
 
 
 def main():
-    global bot, authorized_users, cameras, verbose, settings, scheduler, audio_on
+    global bot, authorized_users, cameras, verbose, settings, scheduler
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -387,17 +431,15 @@ def main():
         return
     telegram_bot_token = config.get('telegram_bot_token')
     if not telegram_bot_token:
-        print('Error: config file doesn’t contain a `telegram_bot_token`')
+        print('Error: config file doesn\'t contain a `telegram_bot_token`')
         return
     authorized_users = config.get('authorized_users')
     if type(authorized_users) is not list or len(authorized_users) == 0:
-        print('Error: config file doesn’t contain an `authorized_users` list')
+        print('Error: config file doesn\'t contain an `authorized_users` list')
         return
 
-    audio_on = config.get('audio', True)
-    if audio_on:
-        pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
-        pygame.mixer.init()
+    pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
+    pygame.mixer.init()
     timeout_secs = config.get('timeout_secs', 10 * 60)
     cameras = config.get('cameras', [])
     image_folder = config.get('image_folder', '/home/ftp-upload')
