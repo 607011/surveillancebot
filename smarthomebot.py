@@ -23,6 +23,7 @@ import urllib3
 import pygame
 import audiotools
 import threading
+import queue
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -35,7 +36,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0-AUDIO-DEV'
+APPVERSION = '1.0'
 
 
 class easydict(dict):
@@ -45,36 +46,40 @@ class easydict(dict):
 
 
 class Snapshooter(threading.Thread):
-    def __init__(self, cameras, bot, chat_id, callback=None):
+    def __init__(self):
         threading.Thread.__init__(self)
-        self.cameras = cameras
-        self.bot = bot
-        self.chat_id = chat_id
-        self.callback = callback
 
     def run(self):
-        for camera in self.cameras:
-            if camera.get('snapshot_url'):
-                self.bot.sendChatAction(self.chat_id, action='upload_photo')
-                response, error_msg = \
-                    Snapshooter.get_image_from_url(camera.get('snapshot_url'),
-                                                   camera.get('username'),
-                                                   camera.get('password'))
-                if error_msg:
-                    self.bot.sendMessage(self.chat_id,
-                                    'Fehler beim Abrufen des Schnappschusses via {}: {}'
-                                    .format(camera.get('snapshot_url'), error_msg))
-                elif response and response.data:
-                    handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
-                    f = open(photo_filename, 'wb+')
-                    f.write(response.data)
-                    f.close()
-                    self.bot.sendPhoto(self.chat_id,
-                                       open(photo_filename, 'rb'),
-                                       caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
-                    os.remove(photo_filename)
-        if self.callback:
-            self.callback()
+        global snapshot_queue
+        while True:
+            task = snapshot_queue.get()
+            if verbose:
+                print('Snapshooter received', task)
+            if task is None:
+                break
+            for camera in task['cameras']:
+                if camera.get('snapshot_url'):
+                    task['bot'].sendChatAction(task['chat_id'], action='upload_photo')
+                    response, error_msg = \
+                        Snapshooter.get_image_from_url(camera.get('snapshot_url'),
+                                                       camera.get('username'),
+                                                       camera.get('password'))
+                    if error_msg:
+                        task['bot'].sendMessage(task['chat_id'],
+                                               'Fehler beim Abrufen des Schnappschusses via {}: {}'
+                                               .format(camera.get('snapshot_url'), error_msg))
+                    elif response and response.data:
+                        handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
+                        f = open(photo_filename, 'wb+')
+                        f.write(response.data)
+                        f.close()
+                        task['bot'].sendPhoto(task['chat_id'],
+                                              open(photo_filename, 'rb'),
+                                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+                        os.remove(photo_filename)
+            if 'callback' in task.keys():
+                task['callback']()
+            snapshot_queue.task_done()
 
     @staticmethod
     def get_image_from_url(url, username, password):
@@ -91,76 +96,74 @@ class Snapshooter(threading.Thread):
 
 
 class VideoProcessor(threading.Thread):
-    def __init__(self, src_filename, bot, send_to_users, path_to_ffmpeg):
+    def __init__(self):
         threading.Thread.__init__(self)
-        self.bot = bot
-        self.src_filename = src_filename
-        self.send_to_users = send_to_users
-        self.path_to_ffmpeg = path_to_ffmpeg
 
     def run(self):
-        global verbose
-        self.bot.sendChatAction(chat_id, action='upload_video')
-        handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
-        if verbose:
-            print('Converting video {} to {} ...'.format(self.src_filename, dst_video_filename))
-        subprocess.call(
-            [self.path_to_ffmpeg,
-             '-y',
-             '-loglevel',
-             'panic', '-i', self.src_filename,
-             '-vf', 'scale=640:-1',
-             '-movflags',
-             '+faststart',
-             '-c:v', 'libx264',
-             '-preset', 'fast',
-             dst_video_filename],
-            shell=False)
-        for user in self.send_to_users:
-            self.bot.sendVideo(user, open(dst_video_filename, 'rb'),
-                               caption='{} ({})'.format(os.path.basename(self.src_filename),
-                                                        datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
-        os.remove(dst_video_filename)
-        os.remove(self.src_filename)
+        global verbose, snapshot_queue, path_to_ffmpeg, bot, authorized_users
+        while True:
+            task = video_queue.get()
+            if verbose:
+                print('VideoProcessor received', task)
+            if task is None:
+                break
+            for user in authorized_users:
+                bot.sendChatAction(user, action='upload_video')
+            handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
+            cmd = [path_to_ffmpeg,
+                   '-y',
+                   '-loglevel', 'panic',
+                   '-i', task['src_filename'],
+                   '-vf', 'scale=640:-1',
+                   '-movflags',
+                   '+faststart',
+                   '-c:v', 'libx264',
+                   '-preset', 'fast',
+                   dst_video_filename]
+            if verbose:
+                print('Running ' + ' '.join(cmd))
+            rc = subprocess.call(cmd, shell=False)
+            for user in authorized_users:
+                bot.sendVideo(user, open(dst_video_filename, 'rb'),
+                              caption='{} ({})'.format(os.path.basename(task['src_filename']),
+                                                       datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
+            os.remove(dst_video_filename)
+            os.remove(task['src_filename'])
+            video_queue.task_done()
 
 
 class VoiceProcessor(threading.Thread):
-    def __init__(self, bot, file_id, chat_id):
+    def __init__(self):
         threading.Thread.__init__(self)
-        self.bot = bot
-        self.file_id = file_id
-        self.chat_id = chat_id
-        print('VoiceProcessor.__init__(file_id="{}", chat_id={}) called.'.format(file_id, chat_id))
 
     def run(self):
-        handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
-        handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
-        self.bot.sendChatAction(self.chat_id, action='upload_audio')
-        self.bot.download_file(self.file_id, voice_filename)
-        audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
-        pygame.mixer.music.load(converted_audio_filename)
-        pygame.mixer.music.play()
-        os.remove(converted_audio_filename)
-        os.remove(voice_filename)
-        self.bot.sendMessage(self.chat_id, 'Voice message played.')
+        global verbose, voice_queue, bot
+        while True:
+            task = voice_queue.get()
+            if verbose:
+                print('VoiceProcessor received', task)
+            if task is None:
+                break
+            handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
+            handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
+            bot.sendChatAction(task['chat_id'], action='upload_audio')
+            bot.download_file(task['file_id'], voice_filename)
+            audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
+            pygame.mixer.music.load(converted_audio_filename)
+            pygame.mixer.music.play()
+            os.remove(converted_audio_filename)
+            os.remove(voice_filename)
+            bot.sendMessage(task['chat_id'], 'Voice message played.')
+            voice_queue.task_done()
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
 
     def __init__(self, *args, **kwargs):
         super(UploadDirectoryEventHandler, self).__init__()
-        self.bot = kwargs.get('bot')
-        self.verbose = kwargs.get('verbose', False)
-        self.authorized_users = kwargs.get('authorized_users', [])
-        self.path_to_ffmpeg = kwargs.get('path_to_ffmpeg')
         self.max_photo_size = kwargs.get('max_photo_size', 1280)
         self.do_send_videos = kwargs.get('send_videos', True)
         self.do_send_photos = kwargs.get('send_photos', False)
-        self.threads = []
-
-    def __del__(self):
-        for thr in self.threads:
-            thr.join()
 
     def on_created(self, event):
         if not event.is_directory:
@@ -171,14 +174,14 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             elif ext in ['.avi', '.mp4', '.mkv', '.m4v', '.mov', '.mpg']:
                 self.process_video(event.src_path)
             else:
-                if self.verbose:
+                if verbose:
                     print('Detected file of unknown type: {:s}'.format(event.src_path))
 
     def process_photo(self, src_photo_filename):
-        global alerting_on
+        global authorized_users, alerting_on
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
-        if self.verbose:
+        if verbose:
             print('New photo file detected: {}'.format(src_photo_filename))
         dst_photo_filename = src_photo_filename
         if alerting_on and self.do_send_photos:
@@ -188,28 +191,25 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 if im.width > self.max_photo_size or im.height > self.max_photo_size:
                     im.thumbnail((self.max_photo_size, self.max_photo_size), Image.BILINEAR)
                     handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
-                    if self.verbose:
+                    if verbose:
                         print('resizing photo to {} ...'.format(dst_photo_filename))
                     im.save(dst_photo_filename, format='JPEG', quality=87)
                     os.remove(src_photo_filename)
                 im.close()
-            for user in self.authorized_users:
-                if self.verbose:
+            for user in authorized_users:
+                if verbose:
                     print('Sending photo {} ...'.format(dst_photo_filename))
-                self.bot.sendPhoto(user, open(dst_photo_filename, 'rb'),
-                                   caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+                bot.sendPhoto(user, open(dst_photo_filename, 'rb'),
+                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
         os.remove(dst_photo_filename)
 
     def process_video(self, src_video_filename):
-        global alerting_on
         while os.stat(src_video_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
-        if self.verbose:
+        if verbose:
             print('New video file detected: {}'.format(src_video_filename))
-        if alerting_on and self.do_send_videos and self.path_to_ffmpeg:
-            video_processor = VideoProcessor(src_video_filename, self.bot, self.authorized_users, self.path_to_ffmpeg)
-            self.threads.append(video_processor)
-            video_processor.start()
+        if alerting_on and self.do_send_videos and path_to_ffmpeg:
+            video_queue.put({'src_filename': src_video_filename})
         else:
             os.remove(src_video_filename)
 
@@ -292,16 +292,16 @@ class ChatUser(telepot.helper.ChatHandler):
         self.sender.sendMessage('Wähle eine Aktion:', reply_markup=keyboard)
 
     def on_callback_query(self, msg):
-        global alerting_on
+        global alerting_on, snapshooter, snapshot_queue
         query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
         print('Callback Query:', query_id, from_id, query_data)
         if self.cameras.get(query_data):
             self.bot.answerCallbackQuery(query_id,
                                          text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
-            snapshooter = Snapshooter([self.cameras[query_data]], self.bot, from_id,
-                                      lambda: self.send_snapshot_menu())
-            self.threads.append(snapshooter)
-            snapshooter.start()
+            snapshot_queue.put({'cameras': [self.cameras[query_data]],
+                                'chat_id': from_id,
+                                'bot': self.bot,
+                                'callback': lambda: self.send_snapshot_menu()})
         elif query_data == 'disable':
             alerting_on = False
             self.bot.answerCallbackQuery(query_id, text='Alarme wurden ausgeschaltet.')
@@ -394,10 +394,8 @@ class ChatUser(telepot.helper.ChatHandler):
             else:
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
         elif content_type == 'voice':
-            file_id = msg['voice']['file_id']
-            voice_processor = VoiceProcessor(self.bot, file_id, chat_id)
-            voice_processor.start()
-            self.threads.append(voice_processor)
+            voice_queue.put({'file_id': msg['voice']['file_id'],
+                             'chat_id': chat_id})
         else:
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
@@ -410,10 +408,16 @@ settings = easydict()
 scheduler = BackgroundScheduler()
 bot = None
 alerting_on = True
-
+snapshot_queue = queue.Queue()
+video_queue = queue.Queue()
+voice_queue = queue.Queue()
+snapshooter = Snapshooter()
+video_processor = VideoProcessor()
+voice_processor = VoiceProcessor()
+path_to_ffmpeg = None
 
 def main():
-    global bot, authorized_users, cameras, verbose, settings, scheduler
+    global bot, authorized_users, cameras, verbose, settings, scheduler, path_to_ffmpeg
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -421,13 +425,11 @@ def main():
     try:
         with open(config_filename, 'r') as config_file:
             config = json.load(config_file)
-    except FileNotFoundError:
-        print('Error: config file "{}" not found: {}'
-              .format(config_filename))
+    except FileNotFoundError as e:
+        print('Error: config file not found: {}'.format(e))
         return
     except ValueError as e:
-        print('Error: invalid config file "{}": {}'
-              .format(config_filename, e))
+        print('Error: invalid config file "{}": {}'.format(config_filename, e))
         return
     telegram_bot_token = config.get('telegram_bot_token')
     if not telegram_bot_token:
@@ -454,17 +456,20 @@ def main():
                                                            ChatUser,
                                                            timeout=timeout_secs)
     ])
+
+    if verbose:
+        print('Starting threads ...')
+    snapshooter.start()
+    video_processor.start()
+    voice_processor.start()
+
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
     scheduler.start()
     event_handler = UploadDirectoryEventHandler(
-        verbose=verbose,
-        authorized_users=authorized_users,
-        path_to_ffmpeg=path_to_ffmpeg,
         max_photo_size=max_photo_size,
         send_photos=send_photos,
         send_videos=send_videos,
-        bot=bot,
         ignore_directories=True)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=True)
@@ -481,6 +486,16 @@ def main():
     shelf.sync()
     shelf.close()
     scheduler.shutdown()
+
+    snapshot_queue.join()
+    video_queue.join()
+    voice_queue.join()
+    snapshot_queue.put(None)
+    video_queue.put(None)
+    voice_queue.put(None)
+    snapshooter.join()
+    video_processor.join()
+    voice_processor.join()
 
 
 if __name__ == '__main__':
