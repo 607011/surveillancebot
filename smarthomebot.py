@@ -36,7 +36,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0'
+APPVERSION = '1.0.1'
 
 
 class easydict(dict):
@@ -45,43 +45,14 @@ class easydict(dict):
         return self[key]
 
 
-class Snapshooter(threading.Thread):
-    def __init__(self):
-        threading.Thread.__init__(self)
+class Task(object):
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
-    def run(self):
-        global snapshot_queue
-        while True:
-            task = snapshot_queue.get()
-            if verbose:
-                print('Snapshooter received', task)
-            if task is None:
-                break
-            for camera in task['cameras']:
-                if camera.get('snapshot_url'):
-                    task['bot'].sendChatAction(task['chat_id'], action='upload_photo')
-                    response, error_msg = \
-                        Snapshooter.get_image_from_url(camera.get('snapshot_url'),
-                                                       camera.get('username'),
-                                                       camera.get('password'))
-                    if error_msg:
-                        task['bot'].sendMessage(task['chat_id'],
-                                               'Fehler beim Abrufen des Schnappschusses via {}: {}'
-                                               .format(camera.get('snapshot_url'), error_msg))
-                    elif response and response.data:
-                        handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
-                        f = open(photo_filename, 'wb+')
-                        f.write(response.data)
-                        f.close()
-                        task['bot'].sendPhoto(task['chat_id'],
-                                              open(photo_filename, 'rb'),
-                                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
-                        os.remove(photo_filename)
-            if 'callback' in task.keys():
-                task['callback']()
-            snapshot_queue.task_done()
 
-    @staticmethod
+def take_snapshot_thread():
+
     def get_image_from_url(url, username, password):
         error_msg = None
         response = None
@@ -94,67 +65,81 @@ class Snapshooter(threading.Thread):
             error_msg = e.reason
         return response, error_msg
 
-
-class VideoProcessor(threading.Thread):
-    def __init__(self):
-        threading.Thread.__init__(self)
-
-    def run(self):
-        global verbose, snapshot_queue, path_to_ffmpeg, bot, authorized_users
-        while True:
-            task = video_queue.get()
-            if verbose:
-                print('VideoProcessor received', task)
-            if task is None:
-                break
-            for user in authorized_users:
-                bot.sendChatAction(user, action='upload_video')
-            handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
-            cmd = [path_to_ffmpeg,
-                   '-y',
-                   '-loglevel', 'panic',
-                   '-i', task['src_filename'],
-                   '-vf', 'scale=640:-1',
-                   '-movflags',
-                   '+faststart',
-                   '-c:v', 'libx264',
-                   '-preset', 'fast',
-                   dst_video_filename]
-            if verbose:
-                print('Running ' + ' '.join(cmd))
-            rc = subprocess.call(cmd, shell=False)
-            for user in authorized_users:
-                bot.sendVideo(user, open(dst_video_filename, 'rb'),
-                              caption='{} ({})'.format(os.path.basename(task['src_filename']),
-                                                       datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
-            os.remove(dst_video_filename)
-            os.remove(task['src_filename'])
-            video_queue.task_done()
+    while True:
+        task = snapshot_queue.get()
+        if task is None:
+            break
+        for camera in task.cameras:
+            if camera.get('snapshot_url'):
+                bot.sendChatAction(task.chat_id, action='upload_photo')
+                response, error_msg = \
+                    get_image_from_url(camera.get('snapshot_url'),
+                                       camera.get('username'),
+                                       camera.get('password'))
+                if error_msg:
+                    bot.sendMessage(task.chat_id,
+                                    'Fehler beim Abrufen des Schnappschusses via {}: {}'
+                                    .format(camera.get('snapshot_url'), error_msg))
+                elif response and response.data:
+                    handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
+                    f = open(photo_filename, 'wb+')
+                    f.write(response.data)
+                    f.close()
+                    bot.sendPhoto(task.chat_id,
+                                  open(photo_filename, 'rb'),
+                                  caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+                    os.remove(photo_filename)
+        snapshot_queue.task_done()
+        if task.callback:
+            task.callback()
 
 
-class VoiceProcessor(threading.Thread):
-    def __init__(self):
-        threading.Thread.__init__(self)
+def process_video_thread():
+    while True:
+        task = video_queue.get()
+        if task is None:
+            break
+        for user in authorized_users:
+            bot.sendChatAction(user, action='upload_video')
+        handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
+        cmd = [path_to_ffmpeg,
+               '-y',
+               '-loglevel', 'panic',
+               '-i', task.src_filename,
+               '-vf', 'scale=640:-1',
+               '-movflags',
+               '+faststart',
+               '-c:v', 'libx264',
+               '-preset', 'fast',
+               dst_video_filename]
+        if verbose:
+            print('Started {}'.format(' '.join(cmd)))
+        subprocess.call(cmd, shell=False)
+        for user in authorized_users:
+            bot.sendVideo(user, open(dst_video_filename, 'rb'),
+                          caption='{} ({})'.format(os.path.basename(task.src_filename),
+                                                   datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
+        os.remove(dst_video_filename)
+        os.remove(task.src_filename)
+        video_queue.task_done()
 
-    def run(self):
-        global verbose, voice_queue, bot
-        while True:
-            task = voice_queue.get()
-            if verbose:
-                print('VoiceProcessor received', task)
-            if task is None:
-                break
-            handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
-            handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
-            bot.sendChatAction(task['chat_id'], action='upload_audio')
-            bot.download_file(task['file_id'], voice_filename)
-            audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
-            pygame.mixer.music.load(converted_audio_filename)
-            pygame.mixer.music.play()
-            os.remove(converted_audio_filename)
-            os.remove(voice_filename)
-            bot.sendMessage(task['chat_id'], 'Voice message played.')
-            voice_queue.task_done()
+
+def process_voice_thread():
+    while True:
+        task = voice_queue.get()
+        if task is None:
+            break
+        handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
+        handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
+        bot.sendChatAction(task.chat_id, action='upload_audio')
+        bot.download_file(task.file_id, voice_filename)
+        audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
+        pygame.mixer.music.load(converted_audio_filename)
+        pygame.mixer.music.play()
+        os.remove(converted_audio_filename)
+        os.remove(voice_filename)
+        bot.sendMessage(task.chat_id, 'Voice message played.')
+        voice_queue.task_done()
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -209,7 +194,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if verbose:
             print('New video file detected: {}'.format(src_video_filename))
         if alerting_on and self.do_send_videos and path_to_ffmpeg:
-            video_queue.put({'src_filename': src_video_filename})
+            video_queue.put(Task(src_filename=src_video_filename))
         else:
             os.remove(src_video_filename)
 
@@ -223,21 +208,13 @@ class ChatUser(telepot.helper.ChatHandler):
                     'Mach du dein Ding. Ich mach hier meins.', 'Alles voll secure in da house.']
 
     def __init__(self, *args, **kwargs):
-        global verbose, cameras
         super(ChatUser, self).__init__(*args, **kwargs)
         self.timeout_secs = kwargs.get('timeout')
-        self.verbose = verbose
-        self.cameras = cameras
         self.snapshot_job = None
-        self.threads = []
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
         self.init_scheduler(chat_id)
-
-    def cleanup(self):
-        while len(self.threads) > 0:
-            self.threads.pop().join()
 
     def init_scheduler(self, chat_id):
         global settings, scheduler
@@ -251,31 +228,28 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.snapshot_job = scheduler.add_job(
                     make_snapshot, 'interval',
                     seconds=interval,
-                    kwargs={'bot': self.bot,
+                    kwargs={'bot': bot,
                             'chat_id': chat_id,
-                            'cameras': self.cameras.values()})
+                            'cameras': cameras.values()})
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
 
     def on__idle(self, event):
-        global alerting_on
         if alerting_on:
             ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
             self.sender.sendMessage(ChatUser.IdleMessages[ridx], parse_mode='Markdown')
-        self.cleanup()
 
     def on_close(self, msg):
-        if self.verbose:
+        if verbose:
             print('on_close() called. {}'.format(msg))
         if type(self.snapshot_job) is Job:
             self.snapshot_job.remove()
-        self.cleanup()
         return True
 
     def send_snapshot_menu(self):
-        kbd = [ InlineKeyboardButton(text=self.cameras[c]['name'], callback_data=c)
-                for c in self.cameras.keys() ]
+        kbd = [ InlineKeyboardButton(text=cameras[c]['name'], callback_data=c)
+                for c in cameras.keys() ]
         keyboard = InlineKeyboardMarkup(inline_keyboard=[kbd])
         self.sender.sendMessage('Schnappschuss anzeigen von:', reply_markup=keyboard)
 
@@ -295,13 +269,12 @@ class ChatUser(telepot.helper.ChatHandler):
         global alerting_on, snapshooter, snapshot_queue
         query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
         print('Callback Query:', query_id, from_id, query_data)
-        if self.cameras.get(query_data):
-            self.bot.answerCallbackQuery(query_id,
-                                         text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
-            snapshot_queue.put({'cameras': [self.cameras[query_data]],
-                                'chat_id': from_id,
-                                'bot': self.bot,
-                                'callback': lambda: self.send_snapshot_menu()})
+        if cameras.get(query_data):
+            bot.answerCallbackQuery(query_id,
+                                    text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
+            snapshot_queue.put(Task(cameras=[cameras[query_data]],
+                                    chat_id=from_id,
+                                    callback=lambda: self.send_snapshot_menu()))
         elif query_data == 'disable':
             alerting_on = False
             self.bot.answerCallbackQuery(query_id, text='Alarme wurden ausgeschaltet.')
@@ -318,7 +291,7 @@ class ChatUser(telepot.helper.ChatHandler):
         global scheduler, settings, alerting_on
         content_type, chat_type, chat_id = telepot.glance(msg)
         if content_type == 'text':
-            if self.verbose:
+            if verbose:
                 pprint(msg)
             msg_text = msg['text']
             if msg_text.startswith('/start'):
@@ -395,8 +368,8 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
         elif content_type == 'voice':
             if audio_on:
-                voice_queue.put({'file_id': msg['voice']['file_id'],
-                                 'chat_id': chat_id})
+                voice_queue.put(Task(file_id=msg['voice']['file_id'],
+                                     chat_id=chat_id))
             else:
                 self.sender.sendMessage('Sprachausgabe ist vorläufig deaktiviert.')
         else:
@@ -416,9 +389,9 @@ audio_on = True
 snapshot_queue = queue.Queue()
 video_queue = queue.Queue()
 voice_queue = queue.Queue()
-snapshooter = Snapshooter()
-video_processor = VideoProcessor()
-voice_processor = VoiceProcessor()
+snapshooter = threading.Thread(target=take_snapshot_thread)
+video_processor = threading.Thread(target=process_video_thread)
+voice_processor = threading.Thread(target=process_voice_thread)
 
 
 def main():
@@ -495,14 +468,14 @@ def main():
     shelf.close()
     scheduler.shutdown()
 
-    snapshot_queue.join()
+    # snapshot_queue.join()
     snapshot_queue.put(None)
     snapshooter.join()
-    video_queue.join()
+    # video_queue.join()
     video_queue.put(None)
     video_processor.join()
     if audio_on:
-        voice_queue.join()
+        # voice_queue.join()
         voice_queue.put(None)
         voice_processor.join()
 
