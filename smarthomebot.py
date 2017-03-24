@@ -146,9 +146,6 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
     def __init__(self, *args, **kwargs):
         super(UploadDirectoryEventHandler, self).__init__()
-        self.max_photo_size = kwargs.get('max_photo_size', 1280)
-        self.do_send_videos = kwargs.get('send_videos', True)
-        self.do_send_photos = kwargs.get('send_photos', False)
 
     def on_created(self, event):
         if not event.is_directory:
@@ -163,18 +160,17 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                     print('Detected file of unknown type: {:s}'.format(event.src_path))
 
     def process_photo(self, src_photo_filename):
-        global authorized_users, alerting_on
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
         if verbose:
             print('New photo file detected: {}'.format(src_photo_filename))
         dst_photo_filename = src_photo_filename
-        if alerting_on and self.do_send_photos:
+        if alerting_on and do_send_photos:
             # TODO: move block to thread (???)
-            if self.max_photo_size:
+            if type(max_photo_size) is int:
                 im = Image.open(src_photo_filename)
-                if im.width > self.max_photo_size or im.height > self.max_photo_size:
-                    im.thumbnail((self.max_photo_size, self.max_photo_size), Image.BILINEAR)
+                if im.width > max_photo_size or im.height > max_photo_size:
+                    im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
                     handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
                     if verbose:
                         print('resizing photo to {} ...'.format(dst_photo_filename))
@@ -193,7 +189,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             time.sleep(0.1)
         if verbose:
             print('New video file detected: {}'.format(src_video_filename))
-        if alerting_on and self.do_send_videos and path_to_ffmpeg:
+        if alerting_on and do_send_videos and type(path_to_ffmpeg) is str:
             video_queue.put(Task(src_filename=src_video_filename))
         else:
             os.remove(src_video_filename)
@@ -209,7 +205,6 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def __init__(self, *args, **kwargs):
         super(ChatUser, self).__init__(*args, **kwargs)
-        self.timeout_secs = kwargs.get('timeout')
         self.snapshot_job = None
 
     def open(self, initial_msg, seed):
@@ -295,7 +290,7 @@ class ChatUser(telepot.helper.ChatHandler):
                 pprint(msg)
             msg_text = msg['text']
             if msg_text.startswith('/start'):
-                self.sender.sendMessage('*Hallo, ich bin dein Heimüberwachungs-Bot!* [' + APPVERSION + ']' +
+                self.sender.sendMessage('*Hallo, ich bin dein Heimüberwachungs-Bot* v' + APPVERSION +
                                         chr(0x1F916) + "\n\n"
                                         'Ich benachrichtige dich, wenn deine Webcams Bewegungen '
                                         'und laute Geräusche erkannt haben '
@@ -376,26 +371,29 @@ class ChatUser(telepot.helper.ChatHandler):
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
 
-# global variables needed for ChatHandler (which unfortunately doesn't allow extra **kwargs)
-authorized_users = None
-cameras = None
-verbose = False
-path_to_ffmpeg = None
 settings = easydict()
 scheduler = BackgroundScheduler()
-bot = None
-alerting_on = True
-audio_on = True
 snapshot_queue = queue.Queue()
 video_queue = queue.Queue()
 voice_queue = queue.Queue()
 snapshooter = threading.Thread(target=take_snapshot_thread)
 video_processor = threading.Thread(target=process_video_thread)
 voice_processor = threading.Thread(target=process_voice_thread)
+authorized_users = None
+cameras = None
+verbose = None
+path_to_ffmpeg = None
+max_photo_size = None
+bot = None
+alerting_on = True
+audio_on = None
+send_videos = None
+send_photos = None
 
 
 def main():
-    global bot, authorized_users, cameras, verbose, settings, scheduler, path_to_ffmpeg, audio_on
+    global bot, authorized_users, cameras, verbose, settings, scheduler, \
+        path_to_ffmpeg, audio_on, max_photo_size, send_videos, send_photos
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -417,16 +415,15 @@ def main():
     if type(authorized_users) is not list or len(authorized_users) == 0:
         print('Error: config file doesn\'t contain an `authorized_users` list')
         return
-
-    timeout_secs = config.get('timeout_secs', 10 * 60)
+    timeout_secs = config.get('timeout_secs', 10*60)
     cameras = config.get('cameras', [])
     image_folder = config.get('image_folder', '/home/ftp-upload')
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', 1280)
-    verbose = config.get('verbose')
+    verbose = config.get('verbose', False)
     send_videos = config.get('send_videos', True)
     send_photos = config.get('send_photos', False)
-    audio_on = config.get('audio', True)
+    audio_on = config.get('audio', False)
     if audio_on:
         pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
         pygame.mixer.init()
@@ -440,18 +437,14 @@ def main():
     if verbose:
         print('Starting threads ...')
     snapshooter.start()
-    video_processor.start()
+    if send_videos:
+        video_processor.start()
     if audio_on:
         voice_processor.start()
-
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
     scheduler.start()
-    event_handler = UploadDirectoryEventHandler(
-        max_photo_size=max_photo_size,
-        send_photos=send_photos,
-        send_videos=send_videos,
-        ignore_directories=True)
+    event_handler = UploadDirectoryEventHandler(ignore_directories=True)
     observer = Observer()
     observer.schedule(event_handler, image_folder, recursive=True)
     observer.start()
