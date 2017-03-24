@@ -394,8 +394,11 @@ class ChatUser(telepot.helper.ChatHandler):
             else:
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
         elif content_type == 'voice':
-            voice_queue.put({'file_id': msg['voice']['file_id'],
-                             'chat_id': chat_id})
+            if audio_on:
+                voice_queue.put({'file_id': msg['voice']['file_id'],
+                                 'chat_id': chat_id})
+            else:
+                self.sender.sendMessage('Sprachausgabe ist vorläufig deaktiviert.')
         else:
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
@@ -404,20 +407,22 @@ class ChatUser(telepot.helper.ChatHandler):
 authorized_users = None
 cameras = None
 verbose = False
+path_to_ffmpeg = None
 settings = easydict()
 scheduler = BackgroundScheduler()
 bot = None
 alerting_on = True
+audio_on = True
 snapshot_queue = queue.Queue()
 video_queue = queue.Queue()
 voice_queue = queue.Queue()
 snapshooter = Snapshooter()
 video_processor = VideoProcessor()
 voice_processor = VoiceProcessor()
-path_to_ffmpeg = None
+
 
 def main():
-    global bot, authorized_users, cameras, verbose, settings, scheduler, path_to_ffmpeg
+    global bot, authorized_users, cameras, verbose, settings, scheduler, path_to_ffmpeg, audio_on
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -440,8 +445,6 @@ def main():
         print('Error: config file doesn\'t contain an `authorized_users` list')
         return
 
-    pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
-    pygame.mixer.init()
     timeout_secs = config.get('timeout_secs', 10 * 60)
     cameras = config.get('cameras', [])
     image_folder = config.get('image_folder', '/home/ftp-upload')
@@ -450,6 +453,10 @@ def main():
     verbose = config.get('verbose')
     send_videos = config.get('send_videos', True)
     send_photos = config.get('send_photos', False)
+    audio_on = config.get('audio', True)
+    if audio_on:
+        pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
+        pygame.mixer.init()
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
                                                            create_open,
@@ -461,7 +468,8 @@ def main():
         print('Starting threads ...')
     snapshooter.start()
     video_processor.start()
-    voice_processor.start()
+    if audio_on:
+        voice_processor.start()
 
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
@@ -488,14 +496,15 @@ def main():
     scheduler.shutdown()
 
     snapshot_queue.join()
-    video_queue.join()
-    voice_queue.join()
     snapshot_queue.put(None)
-    video_queue.put(None)
-    voice_queue.put(None)
     snapshooter.join()
+    video_queue.join()
+    video_queue.put(None)
     video_processor.join()
-    voice_processor.join()
+    if audio_on:
+        voice_queue.join()
+        voice_queue.put(None)
+        voice_processor.join()
 
 
 if __name__ == '__main__':
