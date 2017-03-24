@@ -138,8 +138,32 @@ def process_voice_thread():
         pygame.mixer.music.play()
         os.remove(converted_audio_filename)
         os.remove(voice_filename)
-        bot.sendMessage(task.chat_id, 'Voice message played.')
+        bot.sendMessage(task.chat_id, 'Sprachnachricht wurde abgespielt.')
         voice_queue.task_done()
+
+
+def process_photo_thread():
+    while True:
+        task = photo_queue.get()
+        if task is None:
+            break
+        dst_photo_filename = task.src_filename
+        if type(max_photo_size) is int:
+            im = Image.open(task.src_filename)
+            if im.width > max_photo_size or im.height > max_photo_size:
+                im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
+                handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
+                if verbose:
+                    print('resizing photo to {} ...'.format(dst_photo_filename))
+                im.save(dst_photo_filename, format='JPEG', quality=87)
+                os.remove(task.src_filename)
+            im.close()
+        if verbose:
+            print('Sending photo {} ...'.format(dst_photo_filename))
+        for user in authorized_users:
+            bot.sendPhoto(user, open(dst_photo_filename, 'rb'),
+                          caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+        os.remove(dst_photo_filename)
 
 
 class UploadDirectoryEventHandler(FileSystemEventHandler):
@@ -164,25 +188,10 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             time.sleep(0.1)
         if verbose:
             print('New photo file detected: {}'.format(src_photo_filename))
-        dst_photo_filename = src_photo_filename
         if alerting_on and do_send_photos:
-            # TODO: move block to thread (???)
-            if type(max_photo_size) is int:
-                im = Image.open(src_photo_filename)
-                if im.width > max_photo_size or im.height > max_photo_size:
-                    im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
-                    handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
-                    if verbose:
-                        print('resizing photo to {} ...'.format(dst_photo_filename))
-                    im.save(dst_photo_filename, format='JPEG', quality=87)
-                    os.remove(src_photo_filename)
-                im.close()
-            for user in authorized_users:
-                if verbose:
-                    print('Sending photo {} ...'.format(dst_photo_filename))
-                bot.sendPhoto(user, open(dst_photo_filename, 'rb'),
-                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
-        os.remove(dst_photo_filename)
+            photo_queue.put(Task(src_filename=src_photo_filename))
+        else:
+            os.remove(src_photo_filename)
 
     def process_video(self, src_video_filename):
         while os.stat(src_video_filename).st_size == 0:  # make sure file is written
@@ -376,9 +385,11 @@ scheduler = BackgroundScheduler()
 snapshot_queue = queue.Queue()
 video_queue = queue.Queue()
 voice_queue = queue.Queue()
-snapshooter = threading.Thread(target=take_snapshot_thread)
-video_processor = threading.Thread(target=process_video_thread)
-voice_processor = threading.Thread(target=process_voice_thread)
+photo_queue = queue.Queue()
+snapshooter = None
+video_processor = None
+voice_processor = None
+photo_processor = None
 authorized_users = None
 cameras = None
 verbose = None
@@ -387,13 +398,14 @@ max_photo_size = None
 bot = None
 alerting_on = True
 audio_on = None
-send_videos = None
-send_photos = None
+do_send_videos = None
+do_send_photos = None
 
 
 def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
-        path_to_ffmpeg, audio_on, max_photo_size, send_videos, send_photos
+        path_to_ffmpeg, audio_on, max_photo_size, do_send_videos, do_send_photos, \
+        snapshooter, photo_processor, video_processor, voice_processor
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -415,15 +427,18 @@ def main():
     if type(authorized_users) is not list or len(authorized_users) == 0:
         print('Error: config file doesn\'t contain an `authorized_users` list')
         return
-    timeout_secs = config.get('timeout_secs', 10*60)
     cameras = config.get('cameras', [])
+    if type(cameras) is not dict:
+        print('Error: config file doesn\'t define any `cameras`')
+        return
+    timeout_secs = config.get('timeout_secs', 10*60)
     image_folder = config.get('image_folder', '/home/ftp-upload')
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', 1280)
     verbose = config.get('verbose', False)
-    send_videos = config.get('send_videos', True)
-    send_photos = config.get('send_photos', False)
-    audio_on = config.get('audio', False)
+    do_send_videos = config.get('send_videos', True)
+    do_send_photos = config.get('send_photos', False)
+    audio_on = config.get('audio', {}).get('enabled', False)
     if audio_on:
         pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
         pygame.mixer.init()
@@ -433,13 +448,16 @@ def main():
                                                            ChatUser,
                                                            timeout=timeout_secs)
     ])
-
-    if verbose:
-        print('Starting threads ...')
+    snapshooter = threading.Thread(target=take_snapshot_thread)
     snapshooter.start()
-    if send_videos:
+    if do_send_photos:
+        photo_processor = threading.Thread(target=process_photo_thread)
+        photo_processor.start()
+    if do_send_videos:
+        video_processor = threading.Thread(target=process_video_thread)
         video_processor.start()
     if audio_on:
+        voice_processor = threading.Thread(target=process_voice_thread)
         voice_processor.start()
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
@@ -461,14 +479,15 @@ def main():
     shelf.close()
     scheduler.shutdown()
 
-    # snapshot_queue.join()
     snapshot_queue.put(None)
     snapshooter.join()
-    # video_queue.join()
-    video_queue.put(None)
-    video_processor.join()
+    if do_send_videos:
+        video_queue.put(None)
+        video_processor.join()
+    if do_send_photos:
+        photo_queue.put(None)
+        photo_processor.join()
     if audio_on:
-        # voice_queue.join()
         voice_queue.put(None)
         voice_processor.join()
 
