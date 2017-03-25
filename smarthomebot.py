@@ -90,8 +90,12 @@ def take_snapshot_thread():
                                   caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
                     os.remove(photo_filename)
         snapshot_queue.task_done()
-        if task.callback:
+        if hasattr(task, 'callback'):
             task.callback()
+
+
+def make_snapshot(chat_id):
+    snapshot_queue.put(Task(cameras=cameras.values(), chat_id=chat_id))
 
 
 def process_video_thread():
@@ -232,9 +236,7 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.snapshot_job = scheduler.add_job(
                     make_snapshot, 'interval',
                     seconds=interval,
-                    kwargs={'bot': bot,
-                            'chat_id': chat_id,
-                            'cameras': cameras.values()})
+                    kwargs={'chat_id': chat_id})
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
@@ -306,17 +308,6 @@ class ChatUser(telepot.helper.ChatHandler):
                                         'und sende dir ein Video von dem Vorfall.' + "\n",
                                         parse_mode='Markdown')
                 self.send_main_menu()
-            elif msg_text.startswith('/enable') or \
-                    any(cmd in msg_text.lower() for cmd in ['on', 'go', '1', 'ein']):
-                alerting_on = True
-                self.sender.sendMessage('Alarme ein.')
-            elif msg_text.startswith('/disable') or \
-                    any(cmd in msg_text.lower() for cmd in ['off', 'stop', '0', 'aus']):
-                alerting_on = False
-                self.sender.sendMessage('Alarme aus.')
-            elif msg_text.startswith('/toggle'):
-                alerting_on = not alerting_on
-                self.sender.sendMessage('Alarme sind nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
             elif msg_text.startswith('/snapshot'):
                 c = msg_text.split()[1:]
                 subcmd = c[0].lower() if len(c) > 0 else None
@@ -332,14 +323,12 @@ class ChatUser(telepot.helper.ChatHandler):
                                     self.snapshot_job.remove()
                                 self.snapshot_job = scheduler.add_job(make_snapshot, 'interval',
                                                                       seconds=interval,
-                                                                      kwargs={'bot': self.bot,
-                                                                              'chat_id': chat_id,
-                                                                              'cameras': self.cameras.values()})
+                                                                      kwargs={'chat_id': chat_id})
                                 self.sender.sendMessage('Schnappschüsse sind aktiviert. '
                                                         'Das Intervall ist auf {} Sekunden eingestellt.'
                                                         .format(interval))
                             else:
-                                if type(self.napshot_job) is Job:
+                                if type(self.snapshot_job) is Job:
                                     self.snapshot_job.remove()
                                     self.sender.sendMessage('Zeitgesteuerte Schnappschüsse sind nun deaktiviert.')
                                 else:
@@ -354,6 +343,17 @@ class ChatUser(telepot.helper.ChatHandler):
                                 self.sender.sendMessage('Schnappschussintervall ist derzeit auf '
                                                         '{} Sekunden eingestellt.'
                                                         .format(settings[chat_id]['snapshot']['interval']))
+            elif msg_text.startswith('/enable') or \
+                    any(cmd in msg_text.lower() for cmd in ['on', 'go', '1', 'ein']):
+                alerting_on = True
+                self.sender.sendMessage('Alarme ein.')
+            elif msg_text.startswith('/disable') or \
+                    any(cmd in msg_text.lower() for cmd in ['off', 'stop', '0', 'aus']):
+                alerting_on = False
+                self.sender.sendMessage('Alarme aus.')
+            elif msg_text.startswith('/toggle'):
+                alerting_on = not alerting_on
+                self.sender.sendMessage('Alarme sind nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
 
             elif msg_text.startswith('/help'):
                 self.sender.sendMessage("Verfügbare Kommandos:\n\n"
