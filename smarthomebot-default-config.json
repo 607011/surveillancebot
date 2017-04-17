@@ -11,10 +11,12 @@
       "address": "***IP or hostname***",
       "snapshot_url": "***http://cam.ip/snapshot.jpg***",
       "username": null,
-      "password": null,
+      "password": null
     }
   },
-  "audio": false,
+  "audio": {
+    "enabled": false
+  },
   "verbose": true,
   "send_photos": false,
   "send_videos": true
