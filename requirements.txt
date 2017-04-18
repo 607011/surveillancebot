@@ -2,3 +2,6 @@ Pillow
 telepot
 watchdog
 apscheduler
+audiotools
+pygame
+urllib3
