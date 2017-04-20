@@ -45,12 +45,6 @@ class easydict(dict):
         return self[key]
 
 
-class Task(object):
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-
 def take_snapshot_thread():
 
     def get_image_from_url(url, username, password):
@@ -69,15 +63,15 @@ def take_snapshot_thread():
         task = snapshot_queue.get()
         if task is None:
             break
-        for camera in task.cameras:
+        for camera in task['cameras']:
             if camera.get('snapshot_url'):
-                bot.sendChatAction(task.chat_id, action='upload_photo')
+                bot.sendChatAction(task['chat_id'], action='upload_photo')
                 response, error_msg = \
                     get_image_from_url(camera.get('snapshot_url'),
                                        camera.get('username'),
                                        camera.get('password'))
                 if error_msg:
-                    bot.sendMessage(task.chat_id,
+                    bot.sendMessage(task['chat_id'],
                                     'Fehler beim Abrufen des Schnappschusses via {}: {}'
                                     .format(camera.get('snapshot_url'), error_msg))
                 elif response and response.data:
@@ -85,17 +79,18 @@ def take_snapshot_thread():
                     f = open(photo_filename, 'wb+')
                     f.write(response.data)
                     f.close()
-                    bot.sendPhoto(task.chat_id,
+                    bot.sendPhoto(task['chat_id'],
                                   open(photo_filename, 'rb'),
                                   caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
                     os.remove(photo_filename)
         snapshot_queue.task_done()
-        if hasattr(task, 'callback'):
-            task.callback()
+        if 'callback' in task:
+            task['callback']()
 
 
 def make_snapshot(chat_id):
-    snapshot_queue.put(Task(cameras=cameras.values(), chat_id=chat_id))
+    snapshot_queue.put({'cameras': cameras.values(),
+                        'chat_id': chat_id})
 
 
 def process_text_thread():
@@ -105,7 +100,7 @@ def process_text_thread():
             break
         for encoding in encodings:
             try:
-                with open(task.src_filename, 'r', encoding=encoding) as f:
+                with open(task['src_filename'], 'r', encoding=encoding) as f:
                     msg = f.read()
                     if len(msg) > 2048:
                         msg = msg[0:2047]
@@ -118,7 +113,7 @@ def process_text_thread():
         if msg:
             for user in authorized_users:
                 bot.sendMessage(user, msg)
-        os.remove(task.src_filename)
+        os.remove(task['src_filename'])
 
 
 def process_document_thread():
@@ -127,9 +122,9 @@ def process_document_thread():
         if task is None:
             break
         for user in authorized_users:
-            bot.sendDocument(user, open(task.src_filename, 'rb'),
+            bot.sendDocument(user, open(task['src_filename'], 'rb'),
                              caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
-        os.remove(task.src_filename)
+        os.remove(task['src_filename'])
 
 
 def process_video_thread():
@@ -143,7 +138,7 @@ def process_video_thread():
         cmd = [path_to_ffmpeg,
                '-y',
                '-loglevel', 'panic',
-               '-i', task.src_filename,
+               '-i', task['src_filename'],
                '-vf', 'scale=640:-1',
                '-movflags',
                '+faststart',
@@ -155,10 +150,10 @@ def process_video_thread():
         subprocess.call(cmd, shell=False)
         for user in authorized_users:
             bot.sendVideo(user, open(dst_video_filename, 'rb'),
-                          caption='{} ({})'.format(os.path.basename(task.src_filename),
+                          caption='{} ({})'.format(os.path.basename(task['src_filename']),
                                                    datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
         os.remove(dst_video_filename)
-        os.remove(task.src_filename)
+        os.remove(task['src_filename'])
         video_queue.task_done()
 
 
@@ -169,14 +164,14 @@ def process_voice_thread():
             break
         handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
         handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
-        bot.sendChatAction(task.chat_id, action='upload_audio')
-        bot.download_file(task.file_id, voice_filename)
+        bot.sendChatAction(task['chat_id'], action='upload_audio')
+        bot.download_file(task['file_id'], voice_filename)
         audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
         pygame.mixer.music.load(converted_audio_filename)
         pygame.mixer.music.play()
         os.remove(converted_audio_filename)
         os.remove(voice_filename)
-        bot.sendMessage(task.chat_id, 'Sprachnachricht wurde abgespielt.')
+        bot.sendMessage(task['chat_id'], 'Sprachnachricht wurde abgespielt.')
         voice_queue.task_done()
 
 
@@ -185,16 +180,16 @@ def process_photo_thread():
         task = photo_queue.get()
         if task is None:
             break
-        dst_photo_filename = task.src_filename
+        dst_photo_filename = task['src_filename']
         if type(max_photo_size) is int:
-            im = Image.open(task.src_filename)
+            im = Image.open(task['src_filename'])
             if im.width > max_photo_size or im.height > max_photo_size:
                 im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
                 handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
                 if verbose:
                     print('Resizing photo to {} ...'.format(dst_photo_filename))
                 im.save(dst_photo_filename, format='JPEG', quality=87)
-                os.remove(task.src_filename)
+                os.remove(task['src_filename'])
             im.close()
         if verbose:
             print('Sending photo {} ...'.format(dst_photo_filename))
@@ -228,7 +223,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if verbose:
             print('New text file detected: {}'.format(src_text_filename))
         if alerting_on and do_send_text:
-            text_queue.put(Task(src_filename=src_text_filename))
+            text_queue.put({'src_filename': src_text_filename})
         else:
             os.remove(src_text_filename)
 
@@ -237,7 +232,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             time.sleep(0.1)
         print('New document detected: {}'.format(src_document_filename))
         if alerting_on and do_send_documents:
-            document_queue.put(Task(src_filename=src_document_filename))
+            document_queue.put({'src_filename': src_document_filename})
         else:
             os.remove(src_document_filename)
 
@@ -247,7 +242,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if verbose:
             print('New photo file detected: {}'.format(src_photo_filename))
         if alerting_on and do_send_photos:
-            photo_queue.put(Task(src_filename=src_photo_filename))
+            photo_queue.put({'src_filename': src_photo_filename})
         else:
             os.remove(src_photo_filename)
 
@@ -257,7 +252,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if verbose:
             print('New video file detected: {}'.format(src_video_filename))
         if alerting_on and do_send_videos and type(path_to_ffmpeg) is str:
-            video_queue.put(Task(src_filename=src_video_filename))
+            video_queue.put({'src_filename': src_video_filename})
         else:
             os.remove(src_video_filename)
 
@@ -332,9 +327,9 @@ class ChatUser(telepot.helper.ChatHandler):
         if cameras.get(query_data):
             bot.answerCallbackQuery(query_id,
                                     text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
-            snapshot_queue.put(Task(cameras=[cameras[query_data]],
-                                    chat_id=from_id,
-                                    callback=lambda: self.send_snapshot_menu()))
+            snapshot_queue.put({'cameras': [cameras[query_data]],
+                                'chat_id': from_id,
+                                'callback': lambda: self.send_snapshot_menu()})
         elif query_data == 'disable':
             alerting_on = False
             self.bot.answerCallbackQuery(query_id, text='Alarme wurden ausgeschaltet.')
@@ -426,8 +421,8 @@ class ChatUser(telepot.helper.ChatHandler):
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
         elif content_type == 'voice':
             if audio_on:
-                voice_queue.put(Task(file_id=msg['voice']['file_id'],
-                                     chat_id=chat_id))
+                voice_queue.put({'file_id': msg['voice']['file_id'],
+                                 'chat_id': chat_id})
             else:
                 self.sender.sendMessage('Sprachausgabe ist vorläufig deaktiviert.')
         else:
