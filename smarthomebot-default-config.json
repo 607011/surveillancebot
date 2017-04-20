@@ -19,5 +19,7 @@
   },
   "verbose": true,
   "send_photos": false,
-  "send_videos": true
+  "send_videos": true,
+  "send_text": false,
+  "send_documents": false
 }

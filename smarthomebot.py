@@ -98,6 +98,40 @@ def make_snapshot(chat_id):
     snapshot_queue.put(Task(cameras=cameras.values(), chat_id=chat_id))
 
 
+def process_text_thread():
+    while True:
+        task = text_queue.get()
+        if task is None:
+            break
+        for encoding in encodings:
+            try:
+                with open(task.src_filename, 'r', encoding=encoding) as f:
+                    msg = f.read()
+                    if len(msg) > 2048:
+                        msg = msg[0:2047]
+                    print(msg)
+            except UnicodeDecodeError:
+                if verbose:
+                    print('Decoding file as {:s} failed, trying another encoding ...'.format(encoding))
+            else:
+                break
+        if msg:
+            for user in authorized_users:
+                bot.sendMessage(user, msg)
+        os.remove(task.src_filename)
+
+
+def process_document_thread():
+    while True:
+        task = document_queue.get()
+        if task is None:
+            break
+        for user in authorized_users:
+            bot.sendDocument(user, open(task.src_filename, 'rb'),
+                             caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+        os.remove(task.src_filename)
+
+
 def process_video_thread():
     while True:
         task = video_queue.get()
@@ -158,7 +192,7 @@ def process_photo_thread():
                 im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
                 handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
                 if verbose:
-                    print('resizing photo to {} ...'.format(dst_photo_filename))
+                    print('Resizing photo to {} ...'.format(dst_photo_filename))
                 im.save(dst_photo_filename, format='JPEG', quality=87)
                 os.remove(task.src_filename)
             im.close()
@@ -181,11 +215,31 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             ext = ext.lower()
             if ext in ['.jpg', '.png']:
                 self.process_photo(event.src_path)
+            elif ext in ['.txt']:
+                self.process_text(event.src_path)
             elif ext in ['.avi', '.mp4', '.mkv', '.m4v', '.mov', '.mpg']:
                 self.process_video(event.src_path)
             else:
-                if verbose:
-                    print('Detected file of unknown type: {:s}'.format(event.src_path))
+                self.process_document(event.src_path)
+
+    def process_text(self, src_text_filename):
+        while os.stat(src_text_filename).st_size == 0:  # make sure file is written
+            time.sleep(0.1)
+        if verbose:
+            print('New text file detected: {}'.format(src_text_filename))
+        if alerting_on and do_send_text:
+            text_queue.put(Task(src_filename=src_text_filename))
+        else:
+            os.remove(src_text_filename)
+
+    def process_document(self, src_document_filename):
+        while os.stat(src_document_filename).st_size == 0:  # make sure file is written
+            time.sleep(0.1)
+        print('New document detected: {}'.format(src_document_filename))
+        if alerting_on and do_send_documents:
+            document_queue.put(Task(src_filename=src_document_filename))
+        else:
+            os.remove(src_document_filename)
 
     def process_photo(self, src_photo_filename):
         while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
@@ -383,10 +437,14 @@ class ChatUser(telepot.helper.ChatHandler):
 settings = easydict()
 scheduler = BackgroundScheduler()
 snapshot_queue = queue.Queue()
+text_queue = queue.Queue()
+document_queue = queue.Queue()
 video_queue = queue.Queue()
 voice_queue = queue.Queue()
 photo_queue = queue.Queue()
 snapshooter = None
+text_processor = None
+document_processor = None
 video_processor = None
 voice_processor = None
 photo_processor = None
@@ -400,11 +458,15 @@ alerting_on = True
 audio_on = None
 do_send_videos = None
 do_send_photos = None
+do_send_text = None
+do_send_documents = None
+encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 
 
 def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
-        path_to_ffmpeg, audio_on, max_photo_size, do_send_videos, do_send_photos, \
+        encodings, path_to_ffmpeg, audio_on, max_photo_size, \
+        do_send_text, do_send_documents, do_send_videos, do_send_photos, \
         snapshooter, photo_processor, video_processor, voice_processor
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
@@ -436,8 +498,10 @@ def main():
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', 1280)
     verbose = config.get('verbose', False)
-    do_send_videos = config.get('send_videos', True)
     do_send_photos = config.get('send_photos', False)
+    do_send_videos = config.get('send_videos', True)
+    do_send_text = config.get('send_text', False)
+    do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
     if audio_on:
         pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
@@ -450,15 +514,31 @@ def main():
     ])
     snapshooter = threading.Thread(target=take_snapshot_thread)
     snapshooter.start()
+    if do_send_text:
+        text_processor = threading.Thread(target=process_text_thread)
+        text_processor.start()
+        if verbose:
+            print('Enabled text processing.')
+    if do_send_documents:
+        document_processor = threading.Thread(target=process_document_thread)
+        document_processor.start()
+        if verbose:
+            print('Enabled document processing.')
     if do_send_photos:
         photo_processor = threading.Thread(target=process_photo_thread)
         photo_processor.start()
+        if verbose:
+            print('Enabled photo processing.')
     if do_send_videos:
         video_processor = threading.Thread(target=process_video_thread)
         video_processor.start()
+        if verbose:
+            print('Enabled video processing.')
     if audio_on:
         voice_processor = threading.Thread(target=process_voice_thread)
         voice_processor.start()
+        if verbose:
+            print('Enabled audio processing.')
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
     scheduler.start()
@@ -487,10 +567,15 @@ def main():
     if do_send_photos:
         photo_queue.put(None)
         photo_processor.join()
+    if do_send_text:
+        text_queue.put(None)
+        text_processor.join()
+    if do_send_documents:
+        document_queue.put(None)
+        document_processor.join()
     if audio_on:
         voice_queue.put(None)
         voice_processor.join()
-
 
 if __name__ == '__main__':
     main()
