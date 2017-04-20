@@ -36,7 +36,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0.1'
+APPVERSION = '1.0.2'
 
 
 class easydict(dict):
