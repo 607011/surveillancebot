@@ -20,8 +20,6 @@ import telepot
 import subprocess
 import shelve
 import urllib3
-import pygame
-import audiotools
 import threading
 import queue
 from tempfile import mkstemp
@@ -499,6 +497,8 @@ def main():
     do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
     if audio_on:
+        import pygame
+        import audiotools
         pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
         pygame.mixer.init()
     bot = telepot.DelegatorBot(telegram_bot_token, [
