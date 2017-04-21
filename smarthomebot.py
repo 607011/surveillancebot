@@ -34,7 +34,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0.2'
+APPVERSION = '1.0.2-time-lapse-dev'
 
 
 class easydict(dict):
@@ -43,19 +43,21 @@ class easydict(dict):
         return self[key]
 
 
-def take_snapshot_thread():
+def get_image_from_url(url, username, password):
+    error_msg = None
+    response = None
+    try:
+        http = urllib3.PoolManager()
+        headers = urllib3.util.make_headers(basic_auth='{}:{}'
+                                            .format(username, password)) if username and password else None
+        response = http.request('GET', url, headers=headers)
+    except urllib3.exceptions.HTTPError as e:
+        error_msg = e.reason
+    return response, error_msg
 
-    def get_image_from_url(url, username, password):
-        error_msg = None
-        response = None
-        try:
-            http = urllib3.PoolManager()
-            headers = urllib3.util.make_headers(basic_auth='{}:{}'
-                                                .format(username, password)) if username and password else None
-            response = http.request('GET', url, headers=headers)
-        except urllib3.exceptions.HTTPError as e:
-            error_msg = e.reason
-        return response, error_msg
+
+
+def take_snapshot_thread():
 
     while True:
         task = snapshot_queue.get()
@@ -74,16 +76,33 @@ def take_snapshot_thread():
                                     .format(camera.get('snapshot_url'), error_msg))
                 elif response and response.data:
                     handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
-                    f = open(photo_filename, 'wb+')
-                    f.write(response.data)
-                    f.close()
+                    with open(photo_filename, 'wb+') as f:
+                        f.write(response.data)
                     bot.sendPhoto(task['chat_id'],
                                   open(photo_filename, 'rb'),
                                   caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
                     os.remove(photo_filename)
         snapshot_queue.task_done()
-        if 'callback' in task:
-            task['callback']()
+        callback = task.get('callback')
+        if callable(callback):
+            callback()
+
+
+def make_timelapse_snapshot():
+    for cam_id, camera in cameras.items():
+        path = os.path.join(timelapse_folder, cam_id)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        response, error_msg = \
+            get_image_from_url(camera.get('snapshot_url'),
+                               camera.get('username'),
+                               camera.get('password'))
+        if error_msg:
+            print(error_msg)
+        elif response and response.data:
+            snapshot_filename = os.path.join(path, datetime.datetime.now().strftime('%Y%m%d%H%M%S.jpg'))
+            with open(snapshot_filename, 'wb+') as f:
+                f.write(response.data)
 
 
 def make_snapshot(chat_id):
@@ -266,12 +285,13 @@ class ChatUser(telepot.helper.ChatHandler):
     def __init__(self, *args, **kwargs):
         super(ChatUser, self).__init__(*args, **kwargs)
         self.snapshot_job = None
+        self.timelapse_job = None
 
     def open(self, initial_msg, seed):
         content_type, chat_type, chat_id = telepot.glance(initial_msg)
-        self.init_scheduler(chat_id)
+        self.init_schedulers(chat_id)
 
-    def init_scheduler(self, chat_id):
+    def init_schedulers(self, chat_id):
         global settings, scheduler
         interval = settings[chat_id]['snapshot']['interval']
         if type(interval) is not int:
@@ -287,6 +307,19 @@ class ChatUser(telepot.helper.ChatHandler):
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
+        interval = settings[chat_id]['timelapse']['interval']
+        if type(interval) is not int:
+            interval = 0
+            settings[chat_id]['timelapse']['interval'] = interval
+        if interval > 0:
+            if type(self.timelapse_job) is Job:
+                self.timelapse_job.remove()
+                self.timelapse_job = scheduler.add_job(
+                    make_timelapse_snapshot, 'interval',
+                    seconds=interval)
+        else:
+            if type(self.timelapse_job) is Job:
+                self.timelapse_job.remove()
 
     def on__idle(self, event):
         if alerting_on:
@@ -299,6 +332,9 @@ class ChatUser(telepot.helper.ChatHandler):
         if type(self.snapshot_job) is Job:
             self.snapshot_job.remove()
         return True
+
+    def send_timelapse_menu(self):
+        self.sender.sendMessage('TODO')
 
     def send_snapshot_menu(self):
         kbd = [ InlineKeyboardButton(text=cameras[c]['name'], callback_data=c)
@@ -390,33 +426,75 @@ class ChatUser(telepot.helper.ChatHandler):
                                 self.sender.sendMessage('Schnappschussintervall ist derzeit auf '
                                                         '{} Sekunden eingestellt.'
                                                         .format(settings[chat_id]['snapshot']['interval']))
-            elif msg_text.startswith('/enable') or \
-                    any(cmd in msg_text.lower() for cmd in ['on', 'go', '1', 'ein']):
+
+            elif msg_text.startswith('/timelapse'):
+                c = msg_text.split()[1:]
+                subcmd = c[0].lower() if len(c) > 0 else None
+                if subcmd is None:
+                    self.send_timelapse_menu()
+                else:
+                    if subcmd == 'interval':
+                        if len(c) > 1:
+                            interval = int(c[1])
+                            settings[chat_id]['timelapse']['interval'] = interval
+                            if interval > 0:
+                                if type(self.timelapse_job) is Job:
+                                    self.timelapse_job.remove()
+                                self.timelapse_job = scheduler.add_job(make_timelapse_snapshot, 'interval',
+                                                                       seconds=interval)
+                                self.sender.sendMessage('Zeitrafferaufnahmen sind aktiviert. '
+                                                        'Das Intervall ist auf {} Sekunden eingestellt.'
+                                                        .format(interval))
+                            else:
+                                if type(self.snapshot_job) is Job:
+                                    self.snapshot_job.remove()
+                                    self.sender.sendMessage('Zeitrafferaufnahmen sind nun deaktiviert.')
+                                else:
+                                    self.sender.sendMessage('Es waren keine Zeitrafferaufnahmen aktiviert.')
+                        else:
+                            if type(settings[chat_id]['timelapse']['interval']) is not int:
+                                self.sender.sendMessage('Zeitrafferintervall wurde noch nicht eingestellt.')
+                            elif settings[chat_id]['timelapse']['interval'] < 1:
+                                self.sender.sendMessage('Zeitrafferaufnahmen in Intervallen '
+                                                        'ist derzeit deaktiviert.')
+                            else:
+                                self.sender.sendMessage('Zeitrafferintervall ist derzeit auf '
+                                                        '{} Sekunden eingestellt.'
+                                                        .format(settings[chat_id]['timelapse']['interval']))
+
+            elif msg_text.startswith('/enable'):
                 alerting_on = True
                 self.sender.sendMessage('Alarme ein.')
-            elif msg_text.startswith('/disable') or \
-                    any(cmd in msg_text.lower() for cmd in ['off', 'stop', '0', 'aus']):
+
+            elif msg_text.startswith('/disable'):
                 alerting_on = False
                 self.sender.sendMessage('Alarme aus.')
+
             elif msg_text.startswith('/toggle'):
                 alerting_on = not alerting_on
                 self.sender.sendMessage('Alarme sind nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
 
             elif msg_text.startswith('/help'):
                 self.sender.sendMessage("Verfügbare Kommandos:\n\n"
-                                        "/help diese Nachricht anzeigen\n"
-                                        "/enable /disable /toggle Benachrichtigungen aktivieren/deaktivieren\n"
-                                        "/snapshot Liste der Kameras anzeigen, die Schnappschüsse liefern können\n"
-                                        "/snapshot `interval` Das Zeitintervall (Sek.) anzeigen, in dem "
+                                        "/help – diese Nachricht anzeigen\n"
+                                        "/enable /disable /toggle – Benachrichtigungen aktivieren/deaktivieren\n"
+                                        "/timelapse `interval` – Das Intervall (Sek.) für Zeitrafferaufnahmen anzeigen\n"
+                                        "/timelapse `interval` `secs` – Das Intervall für Zeitrafferaufnahmen "
+                                        "in Sekunden setzen\n"
+                                        "/snapshot – Liste der Kameras anzeigen, die Schnappschüsse liefern können\n"
+                                        "/snapshot `interval` – Das Zeitintervall (Sek.) anzeigen, in dem "
                                         "Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
-                                        "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden "
+                                        "/snapshot `interval` `secs` – Schnappschussintervall auf `secs` Sekunden "
                                         "setzen (`0` für aus)\n"
-                                        "/start den Bot (neu)starten\n",
+                                        "/start – den Bot (neu)starten\n",
                                         parse_mode='Markdown')
+
             elif msg_text.startswith('/'):
                 self.sender.sendMessage('Unbekanntes Kommando. /help für weitere Infos eintippen.')
+
             else:
                 self.sender.sendMessage('Ich bin nicht sehr gesprächig. Tippe /help für weitere Infos ein.')
+
         elif content_type == 'voice':
             if audio_on:
                 voice_queue.put({'file_id': msg['voice']['file_id'],
@@ -444,6 +522,7 @@ photo_processor = None
 authorized_users = None
 cameras = None
 verbose = None
+timelapse_folder = None
 path_to_ffmpeg = None
 max_photo_size = None
 bot = None
@@ -459,6 +538,7 @@ encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
         encodings, path_to_ffmpeg, audio_on, max_photo_size, \
+        timelapse_folder, \
         do_send_text, do_send_documents, do_send_videos, do_send_photos, \
         snapshooter, photo_processor, video_processor, voice_processor
     config_filename = 'smarthomebot-config.json'
@@ -487,6 +567,7 @@ def main():
         print('Error: config file doesn\'t define any `cameras`')
         return
     timeout_secs = config.get('timeout_secs', 10*60)
+    timelapse_folder = config.get('timelapse', {'folder': '/Users/ola/tmp/time-lapse'}).get('folder')
     image_folder = config.get('image_folder', '/home/ftp-upload')
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', 1280)
@@ -495,7 +576,7 @@ def main():
     do_send_videos = config.get('send_videos', True)
     do_send_text = config.get('send_text', False)
     do_send_documents = config.get('send_documents', False)
-    audio_on = config.get('audio', {}).get('enabled', False)
+    audio_on = config.get('audio', {'enabled', False}).get('enabled')
     if audio_on:
         import pygame
         import audiotools
