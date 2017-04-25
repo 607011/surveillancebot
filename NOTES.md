@@ -1,3 +1,7 @@
+# TODO
+
+ - Rename script and config file to surveillancebot.*
+
 # IDEAS
 
  - generate a time-lapse video from photos taken at user-defined intervals (see Time-Lapse-Dev branch)
