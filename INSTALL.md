@@ -64,7 +64,7 @@ sudo pip3 install -r requirements.txt
 
 The command-line utility ffmpeg converts videos received from the surveillance cameras to a format suitable for Telegram. Unfortunately, Raspbian doesn't come with an ffmpeg binary. You have to compile it by yourself. 
 
-Telegram prefers H.264 encoded Videos. First, you have to get and compile the appropriate library:
+Telegram prefers H.264 encoded videos. First, you have to get and compile the appropriate library:
 
 ```shell
 mkdir -p ~/Developer
@@ -91,13 +91,13 @@ sudo make install
 
 SurveillanceBot reads its configuration from the file smarthomebot-config.json.
 
-A sample configuration looks like:
+A sample configuration looks like this:
 
 ```JSON
 {
   "telegram_bot_token": "123456789:ASZFACFyZdgPAA-55-jqUU-Jimlql0NIlSC",
   "timeout_secs": 3600,
-  "image_folder": "/home/ftp-upload***",
+  "image_folder": "/home/ftp-upload",
   "authorized_users": [ 784132858 ],
   "path_to_ffmpeg": "/usr/local/bin/ffmpeg",
   "max_photo_size": 1280,
