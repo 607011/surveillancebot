@@ -1,0 +1,3 @@
+[submodule "python-audio-tools"]
+	path = python-audio-tools
+	url = git://github.com/tuffy/python-audio-tools.git
