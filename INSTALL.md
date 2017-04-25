@@ -19,7 +19,7 @@ The code is now contained in the subdirectory "surveillancebot".
 
 ## Audio
 
-OGG/Opus support and the Python modules `audiotools` and `pygame` and are needed to process incoming voice messages.
+OGG/Opus support and the Python modules `audiotools` and `pygame` are needed to process incoming voice messages.
 
 ### Install OGG/Opus support
 
@@ -60,8 +60,89 @@ sudo pip3 install -r requirements.txt
 ```
 
 
+## Install ffmpeg
+
+The command-line utility ffmpeg converts videos received from the surveillance cameras to a format suitable for Telegram. Unfortunately, Raspbian doesn't come with an ffmpeg binary. You have to compile it by yourself. 
+
+Telegram prefers H.264 encoded Videos. First, you have to get and compile the appropriate library:
+
+```shell
+mkdir -p ~/Developer
+cd ~/Developer
+git clone --depth 1 git://git.videolan.org/x264
+cd x264
+./configure --host=arm-unknown-linux-gnueabi --enable-static --disable-opencl
+make -j 4
+sudo make install
+```
+
+Then you can build ffmpeg with H.264 support enabled:
+
+```shell
+cd ..
+git clone --depth 1 git://source.ffmpeg.org/ffmpeg.git
+cd ffmpeg
+sudo ./configure --arch=armel --target-os=linux --enable-gpl --enable-libx264 --enable-nonfree
+make -j 4
+sudo make install
+```
+
 # How to configure SurveillanceBot
 
+SurveillanceBot reads its configuration from the file smarthomebot-config.json.
+
+A sample configuration looks like:
+
+```JSON
+{
+  "telegram_bot_token": "123456789:ASZFACFyZdgPAA-55-jqUU-Jimlql0NIlSC",
+  "timeout_secs": 3600,
+  "image_folder": "/home/ftp-upload***",
+  "authorized_users": [ 784132858 ],
+  "path_to_ffmpeg": "/usr/local/bin/ffmpeg",
+  "max_photo_size": 1280,
+  "cameras": {
+    "livingroom": {
+      "name": "living room",
+      "address": "cam.ip",
+      "snapshot_url": "http://cam.ip/snapshot.jpg",
+      "username": null,
+      "password": null
+    }
+  },
+  "audio": {
+    "enabled": false
+  },
+  "verbose": true,
+  "send_photos": false,
+  "send_videos": true,
+  "send_text": false,
+  "send_documents": false
+}
 ```
-TODO
-```
+
+`telegram_bot_token` TODO…
+
+`timeout_secs` TODO…
+
+`image_folder` TODO…
+
+`authorized_users` TODO…
+
+`path_to_ffmpeg` TODO…
+
+`max_photo_size` TODO…
+
+`cameras` TODO…
+
+`audio` TODO…
+
+`verbose` TODO…
+
+`send_photos` TODO…
+
+`send_videos` TODO…
+
+`send_text` TODO…
+
+`send_documents` TODO…
