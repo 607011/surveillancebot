@@ -38,7 +38,7 @@ The Python [`audiotools`](http://audiotools.sourceforge.net/) module is needed t
 cd surveillancebot/python-audio-tools
 git submodule init
 git submodule update
-sudo make install
+sudo python3 setup.py install
 ```
 
 ### Install pygame prerequisites
