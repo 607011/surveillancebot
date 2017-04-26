@@ -422,19 +422,19 @@ class ChatUser(telepot.helper.ChatHandler):
                 voice_queue.put({'file_id': msg['voice']['file_id'],
                                  'chat_id': chat_id})
             else:
-                self.sender.sendMessage('Sprachausgabe ist vorläufig deaktiviert.')
+                self.sender.sendMessage('Keine Sprachausgabe aktiv.')
         else:
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
 
 settings = easydict()
 scheduler = BackgroundScheduler()
-snapshot_queue = queue.Queue()
-text_queue = queue.Queue()
-document_queue = queue.Queue()
-video_queue = queue.Queue()
-voice_queue = queue.Queue()
-photo_queue = queue.Queue()
+snapshot_queue = None
+text_queue = None
+document_queue = None
+video_queue = None
+voice_queue = None
+photo_queue = None
 snapshooter = None
 text_processor = None
 document_processor = None
@@ -458,9 +458,13 @@ encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 
 def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
-        encodings, path_to_ffmpeg, audio_on, max_photo_size, \
-        do_send_text, do_send_documents, do_send_videos, do_send_photos, \
-        snapshooter, photo_processor, video_processor, voice_processor
+        encodings, path_to_ffmpeg, max_photo_size, \
+        snapshot_queue, snapshooter, \
+        do_send_text, text_queue, \
+        do_send_documents, document_queue, \
+        do_send_videos, video_queue, video_processor, \
+        aduio_on, voice_queue, voice_processor, \
+        do_send_photos, photo_queue, photo_processor
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
     if APPNAME in shelf.keys():
@@ -488,6 +492,14 @@ def main():
         return
     timeout_secs = config.get('timeout_secs', 10*60)
     image_folder = config.get('image_folder', '/home/ftp-upload')
+    event_handler = UploadDirectoryEventHandler(ignore_directories=True)
+    observer = Observer()
+    observer.schedule(event_handler, image_folder, recursive=True)
+    try:
+        observer.start()
+    except OSError as e:
+        print('ERROR: Cannot start observer. Make sure the folder {:s} exists.'.format(image_folder))
+        return
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', 1280)
     verbose = config.get('verbose', False)
@@ -499,37 +511,51 @@ def main():
     if audio_on:
         import pygame
         import audiotools
-        pygame.mixer.pre_init(frequency=48000, size=-16, channels=2, buffer=4096)
-        pygame.mixer.init()
+        try:
+            pygame.mixer.pre_init(frequency=32000, size=-16, channels=2, buffer=4096)
+            pygame.mixer.init()
+        except:
+            print("\nWARNING: Cannot initialize audio.\n"
+                  "*** See above warnings for details.\n"
+                  "*** Consider deactivating audio in your \n"
+                  "*** SurveillanceBot config file.\n")
+            audio_on = False
+
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
                                                            create_open,
                                                            ChatUser,
                                                            timeout=timeout_secs)
     ])
+    snapshot_queue = queue.Queue()
     snapshooter = threading.Thread(target=take_snapshot_thread)
     snapshooter.start()
     if do_send_text:
+        text_queue = queue.Queue()
         text_processor = threading.Thread(target=process_text_thread)
         text_processor.start()
         if verbose:
             print('Enabled text processing.')
     if do_send_documents:
+        document_queue = queue.Queue()
         document_processor = threading.Thread(target=process_document_thread)
         document_processor.start()
         if verbose:
             print('Enabled document processing.')
     if do_send_photos:
+        photo_queue = queue.Queue()
         photo_processor = threading.Thread(target=process_photo_thread)
         photo_processor.start()
         if verbose:
             print('Enabled photo processing.')
     if do_send_videos:
+        video_queue = queue.Queue()
         video_processor = threading.Thread(target=process_video_thread)
         video_processor.start()
         if verbose:
             print('Enabled video processing.')
     if audio_on:
+        voice_queue = queue.Queue()
         voice_processor = threading.Thread(target=process_voice_thread)
         voice_processor.start()
         if verbose:
@@ -537,12 +563,8 @@ def main():
     if verbose:
         print('Monitoring {} ...'.format(image_folder))
     scheduler.start()
-    event_handler = UploadDirectoryEventHandler(ignore_directories=True)
-    observer = Observer()
-    observer.schedule(event_handler, image_folder, recursive=True)
-    observer.start()
     try:
-        bot.message_loop(run_forever='Bot listening ...')
+        bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
     except KeyboardInterrupt:
         pass
     if verbose:
