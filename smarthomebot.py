@@ -34,7 +34,11 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0.2'
+APPVERSION = '1.0.3'
+
+TELEGRAM_AUDIO_BITRATE = 48000
+TELEGRAM_MAX_MESSAGE_SIZE = 2048
+TELEGRAM_MAX_PHOTO_DIMENSION = 1280
 
 
 class easydict(dict):
@@ -100,9 +104,8 @@ def process_text_thread():
             try:
                 with open(task['src_filename'], 'r', encoding=encoding) as f:
                     msg = f.read()
-                    if len(msg) > 2048:
-                        msg = msg[0:2047]
-                    print(msg)
+                    if len(msg) > TELEGRAM_MAX_MESSAGE_SIZE:
+                        msg = msg[0:TELEGRAM_MAX_MESSAGE_SIZE-1]
             except UnicodeDecodeError:
                 if verbose:
                     print('Decoding file as {:s} failed, trying another encoding ...'.format(encoding))
@@ -164,7 +167,15 @@ def process_voice_thread():
         handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
         bot.sendChatAction(task['chat_id'], action='upload_audio')
         bot.download_file(task['file_id'], voice_filename)
-        audiotools.open(voice_filename).convert(converted_audio_filename, audiotools.VorbisAudio)
+        cmd = [path_to_ffmpeg,
+               '-y',
+               '-loglevel', 'panic',
+               '-i', voice_filename,
+               '-c:a', 'libvorbis',
+               converted_audio_filename]
+        if verbose:
+            print('Started {}'.format(' '.join(cmd)))
+        subprocess.call(cmd, shell=False)
         pygame.mixer.music.load(converted_audio_filename)
         pygame.mixer.music.play()
         os.remove(converted_audio_filename)
@@ -228,7 +239,8 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
     def process_document(self, src_document_filename):
         while os.stat(src_document_filename).st_size == 0:  # make sure file is written
             time.sleep(0.1)
-        print('New document detected: {}'.format(src_document_filename))
+        if verbose:
+            print('New document detected: {}'.format(src_document_filename))
         if alerting_on and do_send_documents:
             document_queue.put({'src_filename': src_document_filename})
         else:
@@ -321,7 +333,8 @@ class ChatUser(telepot.helper.ChatHandler):
     def on_callback_query(self, msg):
         global alerting_on, snapshooter, snapshot_queue
         query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
-        print('Callback Query:', query_id, from_id, query_data)
+        if verbose:
+            print('Callback Query:', query_id, from_id, query_data)
         if cameras.get(query_data):
             bot.answerCallbackQuery(query_id,
                                     text='Schnappschuss von deiner Kamera "{}"'.format(query_data))
@@ -463,7 +476,7 @@ def main():
         do_send_text, text_queue, \
         do_send_documents, document_queue, \
         do_send_videos, video_queue, video_processor, \
-        aduio_on, voice_queue, voice_processor, \
+        audio_on, voice_queue, voice_processor, pygame, \
         do_send_photos, photo_queue, photo_processor
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
@@ -486,41 +499,28 @@ def main():
     if type(authorized_users) is not list or len(authorized_users) == 0:
         print('Error: config file doesn\'t contain an `authorized_users` list')
         return
-    cameras = config.get('cameras', [])
+    cameras = config.get('cameras')
     if type(cameras) is not dict:
         print('Error: config file doesn\'t define any `cameras`')
         return
     timeout_secs = config.get('timeout_secs', 10*60)
-    image_folder = config.get('image_folder', '/home/ftp-upload')
+    upload_folder = config.get('image_folder', '/home/ftp-upload')
     event_handler = UploadDirectoryEventHandler(ignore_directories=True)
     observer = Observer()
-    observer.schedule(event_handler, image_folder, recursive=True)
+    observer.schedule(event_handler, upload_folder, recursive=True)
     try:
         observer.start()
     except OSError as e:
-        print('ERROR: Cannot start observer. Make sure the folder {:s} exists.'.format(image_folder))
+        print('ERROR: Cannot start observer. Make sure the folder {:s} exists.'.format(upload_folder))
         return
     path_to_ffmpeg = config.get('path_to_ffmpeg')
-    max_photo_size = config.get('max_photo_size', 1280)
+    max_photo_size = config.get('max_photo_size', TELEGRAM_MAX_PHOTO_DIMENSION)
     verbose = config.get('verbose', False)
     do_send_photos = config.get('send_photos', False)
     do_send_videos = config.get('send_videos', True)
     do_send_text = config.get('send_text', False)
     do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
-    if audio_on:
-        import pygame
-        import audiotools
-        try:
-            pygame.mixer.pre_init(frequency=32000, size=-16, channels=2, buffer=4096)
-            pygame.mixer.init()
-        except:
-            print("\nWARNING: Cannot initialize audio.\n"
-                  "*** See above warnings for details.\n"
-                  "*** Consider deactivating audio in your \n"
-                  "*** SurveillanceBot config file.\n")
-            audio_on = False
-
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
                                                            create_open,
@@ -555,13 +555,25 @@ def main():
         if verbose:
             print('Enabled video processing.')
     if audio_on:
-        voice_queue = queue.Queue()
-        voice_processor = threading.Thread(target=process_voice_thread)
-        voice_processor.start()
-        if verbose:
-            print('Enabled audio processing.')
+        import pygame
+        try:
+            pygame.mixer.pre_init(frequency=TELEGRAM_AUDIO_BITRATE, size=-16, channels=2, buffer=4096)
+            pygame.mixer.init()
+        except:
+            print("\nWARNING: Cannot initialize audio.\n"
+                  "*** See above warnings for details.\n"
+                  "*** Consider deactivating audio in your \n"
+                  "*** SurveillanceBot config file.\n")
+            audio_on = False
+            del pygame
+        else:
+            voice_queue = queue.Queue()
+            voice_processor = threading.Thread(target=process_voice_thread)
+            voice_processor.start()
+            if verbose:
+                print('Enabled audio processing.')
     if verbose:
-        print('Monitoring {} ...'.format(image_folder))
+        print('Monitoring {} ...'.format(upload_folder))
     scheduler.start()
     try:
         bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')

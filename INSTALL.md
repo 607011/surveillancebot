@@ -17,33 +17,9 @@ git clone https://github.com/ola-ct/surveillancebot.git
 
 The code is now contained in the subdirectory "surveillancebot".
 
-## Audio
+## Install prerequisites and audio support
 
-OGG/Opus support and the Python modules `audiotools` and `pygame` are needed to process incoming voice messages.
-
-### Install OGG/Opus support
-
-```shell
-sudo apt-get install opus-tools libopusfile-dev libopus-dev \
-  python3-dev libvorbis-dev
-```
-
-You can safely ignore the many warnings issued by the compiler when installing the pygame module.
-
-### Install audiotools
-
-The Python [`audiotools`](http://audiotools.sourceforge.net/) module is needed to convert incoming audio messages ([OGG/Opus](https://en.wikipedia.org/wiki/Opus_(audio_format)) encoded) into [OGG/Vorbis](https://en.wikipedia.org/wiki/Vorbis) encoded messages. Only the latter can be played via functions contained in the `pygame` module. The pip-installable `audiotools` currently is missing a file. Therefore it cannot be installed with `pip`, instead it has to be compiled from source. We've added the necessary submodule to the SurveillanceBot repository. Change to submodule's directory, initialize the submodule and fetch the code from its repository, then build and install it by typing: 
-
-```shell
-cd surveillancebot/python-audio-tools
-git submodule init
-git submodule update
-sudo python3 setup.py install
-```
-
-### Install pygame prerequisites
-
-`pygame` is needed to play audio. Install the module with the following command:
+`pygame` is needed to play audio. Install the module's prerequisites with the following command:
 
 ```shell
 sudo apt-get install python3-dev python3-numpy \
@@ -52,7 +28,8 @@ sudo apt-get install python3-dev python3-numpy \
   libswscale-dev 
 ```
 
-## Install other required modules
+The module itself will be installed along with the other required modules:
+
 
 ```shell
 cd Workspace
@@ -62,7 +39,7 @@ sudo pip3 install -r requirements.txt
 
 ## Install ffmpeg
 
-The command-line utility ffmpeg converts videos received from the surveillance cameras to a format suitable for Telegram. Unfortunately, Raspbian doesn't come with an ffmpeg binary. You have to compile it by yourself. 
+The command-line utility ffmpeg converts videos received from the surveillance cameras and audio data received from authorized users to a format suitable for Telegram respectively to be played on the local audio device. Unfortunately, Raspbian doesn't come with an ffmpeg binary. You have to compile it by yourself. 
 
 Telegram prefers H.264 encoded videos. First, you have to get and compile the appropriate library:
 
@@ -82,7 +59,7 @@ Then you can build ffmpeg with H.264 support enabled:
 cd ..
 git clone --depth 1 git://source.ffmpeg.org/ffmpeg.git
 cd ffmpeg
-sudo ./configure --arch=armel --target-os=linux --enable-gpl --enable-libx264 --enable-nonfree
+sudo ./configure --arch=armel --target-os=linux --enable-gpl --enable-libx264 --enable-libvorbis --enable-nonfree
 make -j 4
 sudo make install
 ```
