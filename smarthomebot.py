@@ -62,7 +62,6 @@ def get_image_from_url(url, username, password):
 
 
 def take_snapshot_thread():
-
     while True:
         task = snapshot_queue.get()
         if task is None:
@@ -93,7 +92,9 @@ def take_snapshot_thread():
 
 
 def make_timelapse_snapshot():
+    print('make_timelapse_snapshot() @ {:s}'.format(datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')))
     for cam_id, camera in cameras.items():
+        print(' - {:s}'.format(cam_id))
         path = os.path.join(timelapse_folder, cam_id)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -107,6 +108,29 @@ def make_timelapse_snapshot():
             snapshot_filename = os.path.join(path, datetime.datetime.now().strftime('%Y%m%d%H%M%S.jpg'))
             with open(snapshot_filename, 'wb+') as f:
                 f.write(response.data)
+
+
+def generate_timelapse_video(cam_id):
+    path = os.path.join(timelapse_folder, cam_id)
+    if not os.path.exists(path):
+        return
+    dst_video_filename = 'timelapse-{:s}.mp4'.format(datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
+    snapshot_filename = os.path.join(path, '*.jpg')
+    cmd = [path_to_ffmpeg,
+           '-y',
+           '-framerate', '24',
+           '-loglevel', 'panic',
+           '-pattern_type', 'glob',
+           '-i', snapshot_filename,
+           '-movflags',
+           '+faststart',
+           '-pix_fmt', 'yuv420p',
+           '-c:v', 'libx264',
+           '-preset', 'fast',
+           dst_video_filename]
+    if verbose:
+        print('Started {}'.format(' '.join(cmd)))
+    subprocess.call(cmd, shell=False)
 
 
 def make_snapshot(chat_id):
