@@ -208,6 +208,18 @@ def process_photo_thread():
         os.remove(dst_photo_filename)
 
 
+def file_write_ok(filename, timeout_secs=5):
+    CheckIntervalMS = 100
+    n_cycles = 1000 * timeout_secs // CheckIntervalMS
+    while os.stat(filename).st_size == 0:  # make sure file is written
+        time.sleep(CheckIntervalMS / 1000)
+        n_cycles -= 1
+        if n_cycles < 0:
+            os.remove(filename)
+            return False
+    return True
+
+
 class UploadDirectoryEventHandler(FileSystemEventHandler):
 
     def __init__(self, *args, **kwargs):
@@ -227,44 +239,40 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 self.process_document(event.src_path)
 
     def process_text(self, src_text_filename):
-        while os.stat(src_text_filename).st_size == 0:  # make sure file is written
-            time.sleep(0.1)
-        if verbose:
-            print('New text file detected: {}'.format(src_text_filename))
-        if alerting_on and do_send_text:
-            text_queue.put({'src_filename': src_text_filename})
-        else:
-            os.remove(src_text_filename)
+        if file_write_ok(src_text_filename):
+            if verbose:
+                print('New text file detected: {}'.format(src_text_filename))
+            if alerting_on and do_send_text:
+                text_queue.put({'src_filename': src_text_filename})
+            else:
+                os.remove(src_text_filename)
 
     def process_document(self, src_document_filename):
-        while os.stat(src_document_filename).st_size == 0:  # make sure file is written
-            time.sleep(0.1)
-        if verbose:
-            print('New document detected: {}'.format(src_document_filename))
-        if alerting_on and do_send_documents:
-            document_queue.put({'src_filename': src_document_filename})
-        else:
-            os.remove(src_document_filename)
+        if file_write_ok(src_document_filename):
+            if verbose:
+                print('New document detected: {}'.format(src_document_filename))
+            if alerting_on and do_send_documents:
+                document_queue.put({'src_filename': src_document_filename})
+            else:
+                os.remove(src_document_filename)
 
     def process_photo(self, src_photo_filename):
-        while os.stat(src_photo_filename).st_size == 0:  # make sure file is written
-            time.sleep(0.1)
-        if verbose:
-            print('New photo file detected: {}'.format(src_photo_filename))
-        if alerting_on and do_send_photos:
-            photo_queue.put({'src_filename': src_photo_filename})
-        else:
-            os.remove(src_photo_filename)
+        if file_write_ok(src_photo_filename):
+            if verbose:
+                print('New photo file detected: {}'.format(src_photo_filename))
+            if alerting_on and do_send_photos:
+                photo_queue.put({'src_filename': src_photo_filename})
+            else:
+                os.remove(src_photo_filename)
 
     def process_video(self, src_video_filename):
-        while os.stat(src_video_filename).st_size == 0:  # make sure file is written
-            time.sleep(0.1)
-        if verbose:
-            print('New video file detected: {}'.format(src_video_filename))
-        if alerting_on and do_send_videos and type(path_to_ffmpeg) is str:
-            video_queue.put({'src_filename': src_video_filename})
-        else:
-            os.remove(src_video_filename)
+        if file_write_ok(src_video_filename):
+            if verbose:
+                print('New video file detected: {}'.format(src_video_filename))
+            if alerting_on and do_send_videos and type(path_to_ffmpeg) is str:
+                video_queue.put({'src_filename': src_video_filename})
+            else:
+                os.remove(src_video_filename)
 
 
 class ChatUser(telepot.helper.ChatHandler):
@@ -521,7 +529,9 @@ def main():
     try:
         observer.start()
     except OSError as e:
-        print('ERROR: Cannot start observer. Make sure the folder {:s} exists.'.format(upload_folder))
+        import pwd
+        print('ERROR: Cannot start observer. Make sure the folder {:s} exists and is writable for {:s}.'
+              .format(upload_folder, pwd.getpwuid(os.getuid()).pw_name))
         return
     path_to_ffmpeg = config.get('path_to_ffmpeg')
     max_photo_size = config.get('max_photo_size', TELEGRAM_MAX_PHOTO_DIMENSION)
