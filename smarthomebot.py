@@ -428,6 +428,14 @@ class ChatUser(telepot.helper.ChatHandler):
                                         'und sende dir ein Video von dem Vorfall.' + "\n",
                                         parse_mode='Markdown')
                 self.send_main_menu()
+            elif msg_text.startswith('/uptime'):
+                dt = datetime.datetime.now() - start_timestamp
+                hours = dt.seconds // (60 * 60)
+                minutes = (dt.seconds - hours * 60 * 60) // 60
+                seconds = dt.seconds - hours * 60 * 60 - minutes * 60
+                self.sender.sendMessage('Online seit {:s}: {:d} Tage, {:d} Stunden, {:d} Minuten, {:d} Sekunden'
+                                        .format(start_timestamp.strftime('%d.%m.%Y %H:%M:%S'),
+                                                dt.days, hours, minutes, seconds))
             elif msg_text.startswith('/snapshot'):
                 c = msg_text.split()[1:]
                 subcmd = c[0].lower() if len(c) > 0 else None
@@ -523,6 +531,7 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
                                         "/snapshot `interval` `secs` – Schnappschussintervall auf `secs` Sekunden "
                                         "setzen (`0` für aus)\n"
+                                        "/uptime Uptime anzeigen\n",
                                         "/start – den Bot (neu)starten\n",
                                         parse_mode='Markdown')
 
@@ -570,6 +579,7 @@ do_send_photos = None
 do_send_text = None
 do_send_documents = None
 encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
+start_timestamp = datetime.datetime.now()
 
 
 def main():
