@@ -40,7 +40,6 @@ TELEGRAM_AUDIO_BITRATE = 48000
 TELEGRAM_MAX_MESSAGE_SIZE = 2048
 TELEGRAM_MAX_PHOTO_DIMENSION = 1280
 
-
 class easydict(dict):
     def __missing__(self, key):
         self[key] = easydict()
@@ -103,9 +102,7 @@ def process_text_thread():
         for encoding in encodings:
             try:
                 with open(task['src_filename'], 'r', encoding=encoding) as f:
-                    msg = f.read()
-                    if len(msg) > TELEGRAM_MAX_MESSAGE_SIZE:
-                        msg = msg[0:TELEGRAM_MAX_MESSAGE_SIZE-1]
+                    msg = f.read(max_text_file_size)
             except UnicodeDecodeError:
                 if verbose:
                     print('Decoding file as {:s} failed, trying another encoding ...'.format(encoding))
@@ -113,7 +110,9 @@ def process_text_thread():
                 break
         if msg:
             for user in authorized_users:
-                bot.sendMessage(user, msg)
+                while len(msg) > 0:
+                    bot.sendMessage(user, msg[:TELEGRAM_MAX_MESSAGE_SIZE])
+                    msg = msg[TELEGRAM_MAX_MESSAGE_SIZE:]
         os.remove(task['src_filename'])
 
 
@@ -483,6 +482,7 @@ do_send_videos = None
 do_send_photos = None
 do_send_text = None
 do_send_documents = None
+max_text_file_size = None
 encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 start_timestamp = datetime.datetime.now()
 
@@ -491,7 +491,7 @@ def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
         encodings, path_to_ffmpeg, max_photo_size, \
         snapshot_queue, snapshooter, \
-        do_send_text, text_queue, \
+        do_send_text, text_queue, max_text_file_size, \
         do_send_documents, document_queue, \
         do_send_videos, video_queue, video_processor, \
         audio_on, voice_queue, voice_processor, pygame, \
@@ -539,6 +539,7 @@ def main():
     do_send_photos = config.get('send_photos', False)
     do_send_videos = config.get('send_videos', True)
     do_send_text = config.get('send_text', False)
+    max_text_file_size = config.get('max_text_file_size', 10 * TELEGRAM_MAX_MESSAGE_SIZE)
     do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
     bot = telepot.DelegatorBot(telegram_bot_token, [
