@@ -22,6 +22,7 @@ import shelve
 import urllib3
 import threading
 import queue
+import shutil
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -34,7 +35,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0.3'
+APPVERSION = '1.0.4'
 
 TELEGRAM_AUDIO_BITRATE = 48000
 TELEGRAM_MAX_MESSAGE_SIZE = 2048
@@ -44,6 +45,14 @@ class easydict(dict):
     def __missing__(self, key):
         self[key] = easydict()
         return self[key]
+
+
+def send_msg_to_all(msg):
+    if isinstance(msg, str):
+        while len(msg) > 0:
+            for user in authorized_users:
+                bot.sendMessage(user, msg[:TELEGRAM_MAX_MESSAGE_SIZE])
+            msg = msg[TELEGRAM_MAX_MESSAGE_SIZE:]
 
 
 def take_snapshot_thread():
@@ -108,11 +117,7 @@ def process_text_thread():
                     print('Decoding file as {:s} failed, trying another encoding ...'.format(encoding))
             else:
                 break
-        if msg:
-            for user in authorized_users:
-                while len(msg) > 0:
-                    bot.sendMessage(user, msg[:TELEGRAM_MAX_MESSAGE_SIZE])
-                    msg = msg[TELEGRAM_MAX_MESSAGE_SIZE:]
+        send_msg_to_all(msg)
         os.remove(task['src_filename'])
 
 
@@ -228,6 +233,9 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
         if not event.is_directory:
             filename, ext = os.path.splitext(os.path.basename(event.src_path))
             ext = ext.lower()
+            if isinstance(copy_to, str):
+                print('Backing up {:s} to {:s} ...'.format(event.src_path, copy_to))
+                shutil.copy2(event.src_path, copy_to)
             if ext in ['.jpg', '.png']:
                 self.process_photo(event.src_path)
             elif ext in ['.txt']:
@@ -421,15 +429,14 @@ class ChatUser(telepot.helper.ChatHandler):
             elif msg_text.startswith('/enable') or \
                     any(cmd in msg_text.lower() for cmd in ['on', 'go', '1', 'ein']):
                 alerting_on = True
-                self.sender.sendMessage('Alarme ein.')
+                send_msg_to_all('Überwachung wurde eingeschaltet.')
             elif msg_text.startswith('/disable') or \
                     any(cmd in msg_text.lower() for cmd in ['off', 'stop', '0', 'aus']):
                 alerting_on = False
-                self.sender.sendMessage('Alarme aus.')
+                send_msg_to_all('Überwachung wurde ausgeschaltet.')
             elif msg_text.startswith('/toggle'):
                 alerting_on = not alerting_on
-                self.sender.sendMessage('Alarme sind nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
-
+                send_msg_to_all('Überwachung ist nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
             elif msg_text.startswith('/help'):
                 self.sender.sendMessage("Verfügbare Kommandos:\n\n"
                                         "/help diese Nachricht anzeigen\n"
@@ -477,6 +484,7 @@ path_to_ffmpeg = None
 max_photo_size = None
 bot = None
 alerting_on = True
+copy_to = None
 audio_on = None
 do_send_videos = None
 do_send_photos = None
@@ -490,7 +498,7 @@ start_timestamp = datetime.datetime.now()
 def main():
     global bot, authorized_users, cameras, verbose, settings, scheduler, \
         encodings, path_to_ffmpeg, max_photo_size, \
-        snapshot_queue, snapshooter, \
+        snapshot_queue, snapshooter, copy_to, \
         do_send_text, text_queue, max_text_file_size, \
         do_send_documents, document_queue, \
         do_send_videos, video_queue, video_processor, \
@@ -539,6 +547,17 @@ def main():
     do_send_photos = config.get('send_photos', False)
     do_send_videos = config.get('send_videos', True)
     do_send_text = config.get('send_text', False)
+    copy_to = config.get('copy_to', None)
+    if isinstance(copy_to, str):
+        if not os.path.isdir(copy_to):
+            print('Error: {:s} (`copy_to`) doesn\'t point to a directory.'.format(copy_to))
+            return
+        if not os.access(copy_to, os.W_OK):
+            print('Error: {:s} (`copy_to`) is not writable.'.format(copy_to))
+            return
+        if verbose:
+            print('All received surveillance files will be backed up to {:s}'.format(copy_to))
+
     max_text_file_size = config.get('max_text_file_size', 10 * TELEGRAM_MAX_MESSAGE_SIZE)
     do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
