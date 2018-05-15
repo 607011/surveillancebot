@@ -5,7 +5,7 @@
 
     Smart Home Bot for Telegram.
 
-    Copyright (c) 2017 Oliver Lau <oliver@ersatzworld.net>
+    Copyright (c) 2017-2018 Oliver Lau <oliver@ersatzworld.net>
     All rights reserved.
 
 """
@@ -23,6 +23,8 @@ import urllib3
 import threading
 import queue
 import shutil
+import pygame
+import pygame.mixer
 from tempfile import mkstemp
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from telepot.delegate import per_chat_id_in, create_open, pave_event_space, include_callback_query_chat_id
@@ -35,7 +37,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.0.4'
+APPVERSION = '1.1.0'
 
 TELEGRAM_AUDIO_BITRATE = 48000
 TELEGRAM_MAX_MESSAGE_SIZE = 2048
@@ -66,7 +68,7 @@ def take_snapshot_thread():
                                                 .format(username, password)) if username and password else None
             response = http.request('GET', url, headers=headers)
         except urllib3.exceptions.HTTPError as e:
-            error_msg = e.reason
+            error_msg = e
         return response, error_msg
 
     while True:
@@ -85,7 +87,7 @@ def take_snapshot_thread():
                                     'Fehler beim Abrufen des Schnappschusses via {}: {}'
                                     .format(camera.get('snapshot_url'), error_msg))
                 elif response and response.data:
-                    handle, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
+                    _, photo_filename = mkstemp(prefix='snapshot-', suffix='.jpg')
                     f = open(photo_filename, 'wb+')
                     f.write(response.data)
                     f.close()
@@ -94,7 +96,7 @@ def take_snapshot_thread():
                                   caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
                     os.remove(photo_filename)
         snapshot_queue.task_done()
-        if 'callback' in task:
+        if 'callback' in task and callable(task['callback']):
             task['callback']()
 
 
@@ -139,7 +141,7 @@ def process_video_thread():
             break
         for user in authorized_users:
             bot.sendChatAction(user, action='upload_video')
-        handle, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
+        _, dst_video_filename = mkstemp(prefix='smarthomebot-', suffix='.mp4')
         cmd = [path_to_ffmpeg,
                '-y',
                '-loglevel', 'panic',
@@ -157,7 +159,9 @@ def process_video_thread():
             bot.sendVideo(user, open(dst_video_filename, 'rb'),
                           caption='{} ({})'.format(os.path.basename(task['src_filename']),
                                                    datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')))
+        print('Removing converted video file: {}'.format(dst_video_filename))
         os.remove(dst_video_filename)
+        print('Removing original video file: {}'.format(task['src_filename']))
         os.remove(task['src_filename'])
         video_queue.task_done()
 
@@ -167,21 +171,22 @@ def process_voice_thread():
         task = voice_queue.get()
         if task is None:
             break
-        handle, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
-        handle, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.oga')
+        _, voice_filename = mkstemp(prefix='voice-', suffix='.oga')
+        _, converted_audio_filename = mkstemp(prefix='converted-audio-', suffix='.wav')
         bot.sendChatAction(task['chat_id'], action='upload_audio')
         bot.download_file(task['file_id'], voice_filename)
         cmd = [path_to_ffmpeg,
                '-y',
                '-loglevel', 'panic',
                '-i', voice_filename,
-               '-c:a', 'libvorbis',
+               '-codec:a', 'pcm_s16le',
                converted_audio_filename]
         if verbose:
             print('Started {}'.format(' '.join(cmd)))
         subprocess.call(cmd, shell=False)
-        pygame.mixer.music.load(converted_audio_filename)
-        pygame.mixer.music.play()
+        voice = pygame.mixer.Sound(converted_audio_filename)
+        voice.set_volume(audio_volume)
+        voice.play()
         os.remove(converted_audio_filename)
         os.remove(voice_filename)
         bot.sendMessage(task['chat_id'], 'Sprachnachricht wurde abgespielt.')
@@ -198,7 +203,7 @@ def process_photo_thread():
             im = Image.open(task['src_filename'])
             if im.width > max_photo_size or im.height > max_photo_size:
                 im.thumbnail((max_photo_size, max_photo_size), Image.BILINEAR)
-                handle, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
+                _, dst_photo_filename = mkstemp(prefix='smarthomebot-', suffix='.jpg')
                 if verbose:
                     print('Resizing photo to {} ...'.format(dst_photo_filename))
                 im.save(dst_photo_filename, format='JPEG', quality=87)
@@ -210,6 +215,22 @@ def process_photo_thread():
             bot.sendPhoto(user, open(dst_photo_filename, 'rb'),
                           caption=datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
         os.remove(dst_photo_filename)
+
+
+def garbage_collector():
+    print('Garbage collection ...')
+    
+    def delete_too_old(file_or_dir):
+        print('delete_too_old("{}")'.format(file_or_dir))
+
+    for root, subdirs, files in os.walk(upload_folder, topdown=False, onerror=None, followlinks=False):
+        for filename in files:
+            fname = os.path.join(root, filename)
+            ctime = datetime.datetime.fromtimestamp(os.path.getctime(fname))
+            if ctime + datetime.timedelta(days=15) < datetime.datetime.now():
+                delete_too_old(fname)
+        for _ in subdirs:
+            pass
 
 
 def file_write_ok(filename, timeout_secs=5):
@@ -231,7 +252,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory:
-            filename, ext = os.path.splitext(os.path.basename(event.src_path))
+            _, ext = os.path.splitext(os.path.basename(event.src_path))
             ext = ext.lower()
             if isinstance(copy_to, str):
                 print('Backing up {:s} to {:s} ...'.format(event.src_path, copy_to))
@@ -279,6 +300,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
             if alerting_on and do_send_videos and type(path_to_ffmpeg) is str:
                 video_queue.put({'src_filename': src_video_filename})
             else:
+                print('Removing {}'.format(src_video_filename))
                 os.remove(src_video_filename)
 
 
@@ -295,7 +317,7 @@ class ChatUser(telepot.helper.ChatHandler):
         self.snapshot_job = None
 
     def open(self, initial_msg, seed):
-        content_type, chat_type, chat_id = telepot.glance(initial_msg)
+        _, _, chat_id = telepot.glance(initial_msg)
         self.init_scheduler(chat_id)
 
     def init_scheduler(self, chat_id):
@@ -319,13 +341,6 @@ class ChatUser(telepot.helper.ChatHandler):
         if alerting_on:
             ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
             self.sender.sendMessage(ChatUser.IdleMessages[ridx], parse_mode='Markdown')
-
-    def on_close(self, msg):
-        if verbose:
-            print('on_close() called. {}'.format(msg))
-        if type(self.snapshot_job) is Job:
-            self.snapshot_job.remove()
-        return True
 
     def send_snapshot_menu(self):
         kbd = [ InlineKeyboardButton(text=cameras[c]['name'], callback_data=c)
@@ -478,6 +493,7 @@ video_processor = None
 voice_processor = None
 photo_processor = None
 authorized_users = None
+upload_folder = None
 cameras = None
 verbose = None
 path_to_ffmpeg = None
@@ -486,6 +502,7 @@ bot = None
 alerting_on = True
 copy_to = None
 audio_on = None
+audio_volume = 1.0
 do_send_videos = None
 do_send_photos = None
 do_send_text = None
@@ -496,13 +513,14 @@ start_timestamp = datetime.datetime.now()
 
 
 def main():
-    global bot, authorized_users, cameras, verbose, settings, scheduler, \
+    global bot, authorized_users, cameras, verbose, settings, \
+        scheduler, cronsched, \
         encodings, path_to_ffmpeg, max_photo_size, \
         snapshot_queue, snapshooter, copy_to, \
         do_send_text, text_queue, max_text_file_size, \
         do_send_documents, document_queue, \
         do_send_videos, video_queue, video_processor, \
-        audio_on, voice_queue, voice_processor, pygame, \
+        audio_on, audio_volume, voice_queue, voice_processor, upload_folder, \
         do_send_photos, photo_queue, photo_processor
     config_filename = 'smarthomebot-config.json'
     shelf = shelve.open('.smarthomebot.shelf')
@@ -561,6 +579,7 @@ def main():
     max_text_file_size = config.get('max_text_file_size', 10 * TELEGRAM_MAX_MESSAGE_SIZE)
     do_send_documents = config.get('send_documents', False)
     audio_on = config.get('audio', {}).get('enabled', False)
+    audio_volume = config.get('audio', {}).get('volume', 1.0)
     bot = telepot.DelegatorBot(telegram_bot_token, [
         include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
                                                            create_open,
@@ -595,7 +614,6 @@ def main():
         if verbose:
             print('Enabled video processing.')
     if audio_on:
-        import pygame
         try:
             pygame.mixer.pre_init(frequency=TELEGRAM_AUDIO_BITRATE, size=-16, channels=2, buffer=4096)
             pygame.mixer.init()
@@ -605,7 +623,6 @@ def main():
                   "*** Consider deactivating audio in your \n"
                   "*** SurveillanceBot config file.\n")
             audio_on = False
-            del pygame
         else:
             voice_queue = queue.Queue()
             voice_processor = threading.Thread(target=process_voice_thread)
@@ -615,6 +632,7 @@ def main():
     if verbose:
         print('Monitoring {} ...'.format(upload_folder))
     scheduler.start()
+    scheduler.add_job(garbage_collector, 'cron', hour=0)
     try:
         bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
     except KeyboardInterrupt:
