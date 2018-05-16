@@ -227,20 +227,55 @@ def process_photo_thread():
         os.remove(dst_photo_filename)
 
 
-def garbage_collector():
-    print('Garbage collection ...')
-    
-    def delete_too_old(file_or_dir):
-        print('delete_too_old("{}")'.format(file_or_dir))
+def mealtime():
+    h = datetime.datetime.now().hour
+    if h > 4 and h < 8:
+        choice = random.choice(['🥐☕️', '🥓🍳', '🥚🥚🥚', '🥛🍪', '🍩🥛', '🥧🍵', '🥧☕️', '☕️🍰', '🥞🥓', '🍞🍯', '🍫'])
+        yell = 'Frühstück'
+    elif h < 14:
+        choice = random.choice(['🥨', '🥘', '🥗', '🌯', '🍔🍟', '🌭', '🍝', '🥖🧀', '🥦🥔🥩', '🍖🍳', '🥪🥪', '🌮🍦', '🍕🍕🍕', '🍱🥠', '🍣🍜', '🍛', '🌶🌭'])
+        yell = 'Mittach'
+    elif h < 20:
+        choice = random.choice(['🧀🍞', '🥪', '🥪🥪', '🍕', '🌭', '🍗', '🍤🍙'])
+        yell = 'Lecker Abendbrot'
+    else:
+        choice = random.choice(['🍔🍺', '🥃', '🍸', '🍹', '🍻', '🥂', '🍷', '🍾', '🥜🍺'])
+        yell = None
+    send_msg_to_all('{}Ich hab Bock auf {}'.format(yell + '! ' if isinstance(yell, str) else '', choice))
 
+
+def garbage_collector():
+    send_msg_to_all('Botti schaut nach, ob irgendwelche alten Dateien gelöscht werden können …')
+
+    def delete_too_old(file_or_dir):
+        total_deleted = 0
+        too_old = datetime.datetime.fromtimestamp(os.path.getctime(file_or_dir)) + datetime.timedelta(days=gc_after_days) < datetime.datetime.now()
+        if too_old and os.path.isdir(file_or_dir):
+            print('delete dir "{}" ... {}'.format(file_or_dir, too_old))
+            try:
+                os.rmdir(file_or_dir)
+            except OSError:
+                pass  # don't care about directories that are not empty
+            total_deleted += 1
+        elif too_old and os.path.isfile(file_or_dir):
+            _, ext = os.path.splitext(file_or_dir)
+            if ext.lower() in valid_video_exts:
+                print('delete file "{}" ... {}'.format(file_or_dir, too_old))
+                os.remove(file_or_dir)
+                total_deleted += 1
+        return total_deleted
+
+    total_files_deleted = 0
+    total_dirs_deleted = 0
     for root, subdirs, files in os.walk(upload_folder, topdown=False, onerror=None, followlinks=False):
         for filename in files:
-            fname = os.path.join(root, filename)
-            ctime = datetime.datetime.fromtimestamp(os.path.getctime(fname))
-            if ctime + datetime.timedelta(days=15) < datetime.datetime.now():
-                delete_too_old(fname)
-        for _ in subdirs:
-            pass
+            total_files_deleted += delete_too_old(os.path.join(root, filename))
+        for dirname in subdirs:
+            total_dirs_deleted += delete_too_old(os.path.join(root, dirname))
+    if total_files_deleted == 0 and total_dirs_deleted == 0:
+        send_msg_to_all('Bottie hat keine Dateien im Upload-Folder gefunden, die älter als {} Tage sind.'.format(gc_after_days))    
+    else:
+        send_msg_to_all('Bottie hat {} Dateien und {} Verzeichnisse aus dem Upload-Folder gelöscht, die älter als {} Tage waren.'.format(total_files_deleted, total_dirs_deleted, gc_after_days))    
 
 
 def file_write_ok(filename, timeout_secs=5):
@@ -271,7 +306,7 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
                 self.process_photo(event.src_path)
             elif ext in ['.txt']:
                 self.process_text(event.src_path)
-            elif ext in ['.avi', '.mp4', '.mkv', '.m4v', '.mov', '.mpg']:
+            elif ext in valid_video_exts:
                 self.process_video(event.src_path)
             else:
                 self.process_document(event.src_path)
@@ -462,6 +497,8 @@ class ChatUser(telepot.helper.ChatHandler):
             elif msg_text.startswith('/toggle'):
                 alerting_on = not alerting_on
                 send_msg_to_all('Überwachung ist nun {}geschaltet.'.format(['aus', 'ein'][alerting_on]))
+            elif msg_text.startswith('/gc'):
+                garbage_collector()
             elif msg_text.startswith('/help'):
                 self.sender.sendMessage("Verfügbare Kommandos:\n\n"
                                         "/help diese Nachricht anzeigen\n"
@@ -471,7 +508,8 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
                                         "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden "
                                         "setzen (`0` für aus)\n"
-                                        "/uptime Uptime anzeigen\n",
+                                        "/uptime Uptime anzeigen\n"
+                                        "/gc alte Dateien löschen\n"
                                         "/start den Bot (neu)starten\n",
                                         parse_mode='Markdown')
             elif msg_text.startswith('/'):
@@ -488,6 +526,8 @@ class ChatUser(telepot.helper.ChatHandler):
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
 
+
+# class Globals:
 settings = easydict()
 scheduler = BackgroundScheduler()
 snapshot_queue = None
@@ -520,11 +560,13 @@ do_send_documents = None
 max_text_file_size = None
 encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 start_timestamp = datetime.datetime.now()
+valid_video_exts = ['.avi', '.mp4', '.mkv', '.m4v', '.mov', '.mpg']
+gc_after_days = 15
 
 
 def main():
     global bot, authorized_users, cameras, verbose, settings, \
-        scheduler, cronsched, \
+        scheduler, gc_after_days, \
         encodings, path_to_ffmpeg, max_photo_size, \
         snapshot_queue, snapshooter, copy_to, \
         do_send_text, text_queue, max_text_file_size, \
@@ -641,8 +683,10 @@ def main():
                 print('Enabled audio processing.')
     if verbose:
         print('Monitoring {} ...'.format(upload_folder))
-    scheduler.start()
     scheduler.add_job(garbage_collector, 'cron', hour=0)
+    scheduler.add_job(mealtime, 'cron', hour='6,12,18,22', jitter=180)
+    scheduler.start()
+    send_msg_to_all('Botti wurde zum Leben erweckt und schiebt nun unaufhörlich Wache 👀')
     try:
         bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
     except KeyboardInterrupt:

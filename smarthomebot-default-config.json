@@ -2,6 +2,7 @@
   "telegram_bot_token": "***place your token here***",
   "timeout_secs": 3600,
   "image_folder": "***/home/ftp-upload***",
+  "copy_to": "***/copies/of/all/incoming/files/go/here***",
   "authorized_users": [ ***user ids go here*** ],
   "path_to_ffmpeg": "***/usr/local/bin/ffmpeg***",
   "max_photo_size": 1280,
@@ -15,7 +16,11 @@
     }
   },
   "audio": {
-    "enabled": false
+    "enabled": false,
+    "volume": 0.6
+  },
+  "garbage_collector": {
+    "hour": 0
   },
   "verbose": true,
   "send_photos": false,
