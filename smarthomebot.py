@@ -47,7 +47,7 @@ from PIL import Image
 
 
 APPNAME = 'smarthomebot'
-APPVERSION = '1.1.0'
+APPVERSION = '1.1.1'
 
 TELEGRAM_AUDIO_BITRATE = 48000
 TELEGRAM_MAX_MESSAGE_SIZE = 2048
@@ -251,12 +251,12 @@ def garbage_collector():
         total_deleted = 0
         too_old = datetime.datetime.fromtimestamp(os.path.getctime(file_or_dir)) + datetime.timedelta(days=gc_after_days) < datetime.datetime.now()
         if too_old and os.path.isdir(file_or_dir):
-            print('delete dir "{}" ... {}'.format(file_or_dir, too_old))
             try:
                 os.rmdir(file_or_dir)
             except OSError:
                 pass  # don't care about directories that are not empty
-            total_deleted += 1
+            else:
+                total_deleted += 1
         elif too_old and os.path.isfile(file_or_dir):
             _, ext = os.path.splitext(file_or_dir)
             if ext.lower() in valid_video_exts:
@@ -374,10 +374,10 @@ class ChatUser(telepot.helper.ChatHandler):
         if interval > 0:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
-                self.snapshot_job = scheduler.add_job(
-                    make_snapshot, 'interval',
-                    seconds=interval,
-                    kwargs={'chat_id': chat_id})
+            self.snapshot_job = scheduler.add_job(
+                make_snapshot, 'interval',
+                seconds=interval,
+                kwargs={'chat_id': chat_id})
         else:
             if type(self.snapshot_job) is Job:
                 self.snapshot_job.remove()
@@ -430,14 +430,14 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def on_chat_message(self, msg):
         global scheduler, settings, alerting_on
-        content_type, chat_type, chat_id = telepot.glance(msg)
+        content_type, _, chat_id = telepot.glance(msg)
         if content_type == 'text':
             if verbose:
                 pprint(msg)
             msg_text = msg['text']
             if msg_text.startswith('/start'):
                 self.sender.sendMessage('*Hallo, ich bin dein Heimüberwachungs-Bot* v' + APPVERSION +
-                                        chr(0x1F916) + "\n\n"
+                                        ' ' + chr(0x1F916) + "\n\n"
                                         'Ich benachrichtige dich, wenn deine Webcams Bewegungen '
                                         'und laute Geräusche erkannt haben '
                                         'und sende dir ein Video von dem Vorfall.' + "\n",
@@ -526,8 +526,7 @@ class ChatUser(telepot.helper.ChatHandler):
             self.sender.sendMessage('Dein "{}" ist im Nirwana gelandet ...'.format(content_type))
 
 
-
-# class Globals:
+# here we go ...
 settings = easydict()
 scheduler = BackgroundScheduler()
 snapshot_queue = None
@@ -562,161 +561,147 @@ encodings = ['utf-8', 'latin1', 'macroman', 'windows-1252', 'windows-1250']
 start_timestamp = datetime.datetime.now()
 valid_video_exts = ['.avi', '.mp4', '.mkv', '.m4v', '.mov', '.mpg']
 gc_after_days = 15
-
-
-def main():
-    global bot, authorized_users, cameras, verbose, settings, \
-        scheduler, gc_after_days, \
-        encodings, path_to_ffmpeg, max_photo_size, \
-        snapshot_queue, snapshooter, copy_to, \
-        do_send_text, text_queue, max_text_file_size, \
-        do_send_documents, document_queue, \
-        do_send_videos, video_queue, video_processor, \
-        audio_on, audio_volume, voice_queue, voice_processor, upload_folder, \
-        do_send_photos, photo_queue, photo_processor
-    config_filename = 'smarthomebot-config.json'
-    shelf = shelve.open('.smarthomebot.shelf')
-    if APPNAME in shelf.keys():
-        settings = easydict(shelf[APPNAME])
-    try:
-        with open(config_filename, 'r') as config_file:
-            config = json.load(config_file)
-    except FileNotFoundError as e:
-        print('Error: config file not found: {}'.format(e))
-        return
-    except ValueError as e:
-        print('Error: invalid config file "{}": {}'.format(config_filename, e))
-        return
-    telegram_bot_token = config.get('telegram_bot_token')
-    if not telegram_bot_token:
-        print('Error: config file doesn\'t contain a `telegram_bot_token`')
-        return
-    authorized_users = config.get('authorized_users')
-    if type(authorized_users) is not list or len(authorized_users) == 0:
-        print('Error: config file doesn\'t contain an `authorized_users` list')
-        return
-    cameras = config.get('cameras')
-    if type(cameras) is not dict:
-        print('Error: config file doesn\'t define any `cameras`')
-        return
-    timeout_secs = config.get('timeout_secs', 10*60)
-    upload_folder = config.get('image_folder', '/home/ftp-upload')
-    event_handler = UploadDirectoryEventHandler(ignore_directories=True)
-    observer = Observer()
-    observer.schedule(event_handler, upload_folder, recursive=True)
-    try:
-        observer.start()
-    except OSError as e:
-        import pwd
-        print('ERROR: Cannot start observer. Make sure the folder {:s} exists and is writable for {:s}.'
-              .format(upload_folder, pwd.getpwuid(os.getuid()).pw_name))
-        return
-    path_to_ffmpeg = config.get('path_to_ffmpeg')
-    max_photo_size = config.get('max_photo_size', TELEGRAM_MAX_PHOTO_DIMENSION)
-    verbose = config.get('verbose', False)
-    do_send_photos = config.get('send_photos', False)
-    do_send_videos = config.get('send_videos', True)
-    do_send_text = config.get('send_text', False)
-    copy_to = config.get('copy_to', None)
-    if isinstance(copy_to, str):
-        if not os.path.isdir(copy_to):
-            print('Error: {:s} (`copy_to`) doesn\'t point to a directory.'.format(copy_to))
-            return
-        if not os.access(copy_to, os.W_OK):
-            print('Error: {:s} (`copy_to`) is not writable.'.format(copy_to))
-            return
-        if verbose:
-            print('All received surveillance files will be backed up to {:s}'.format(copy_to))
-
-    max_text_file_size = config.get('max_text_file_size', 10 * TELEGRAM_MAX_MESSAGE_SIZE)
-    do_send_documents = config.get('send_documents', False)
-    audio_on = config.get('audio', {}).get('enabled', False)
-    audio_volume = config.get('audio', {}).get('volume', 1.0)
-    bot = telepot.DelegatorBot(telegram_bot_token, [
-        include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
-                                                           create_open,
-                                                           ChatUser,
-                                                           timeout=timeout_secs)
-    ])
-    snapshot_queue = queue.Queue()
-    snapshooter = threading.Thread(target=take_snapshot_thread)
-    snapshooter.start()
-    if do_send_text:
-        text_queue = queue.Queue()
-        text_processor = threading.Thread(target=process_text_thread)
-        text_processor.start()
-        if verbose:
-            print('Enabled text processing.')
-    if do_send_documents:
-        document_queue = queue.Queue()
-        document_processor = threading.Thread(target=process_document_thread)
-        document_processor.start()
-        if verbose:
-            print('Enabled document processing.')
-    if do_send_photos:
-        photo_queue = queue.Queue()
-        photo_processor = threading.Thread(target=process_photo_thread)
-        photo_processor.start()
-        if verbose:
-            print('Enabled photo processing.')
-    if do_send_videos:
-        video_queue = queue.Queue()
-        video_processor = threading.Thread(target=process_video_thread)
-        video_processor.start()
-        if verbose:
-            print('Enabled video processing.')
-    if audio_on:
-        try:
-            pygame.mixer.pre_init(frequency=TELEGRAM_AUDIO_BITRATE, size=-16, channels=2, buffer=4096)
-            pygame.mixer.init()
-        except:
-            print("\nWARNING: Cannot initialize audio.\n"
-                  "*** See above warnings for details.\n"
-                  "*** Consider deactivating audio in your \n"
-                  "*** SurveillanceBot config file.\n")
-            audio_on = False
-        else:
-            voice_queue = queue.Queue()
-            voice_processor = threading.Thread(target=process_voice_thread)
-            voice_processor.start()
-            if verbose:
-                print('Enabled audio processing.')
+config_filename = 'smarthomebot-config.json'
+shelf = shelve.open('.smarthomebot.shelf')
+if APPNAME in shelf.keys():
+    settings = easydict(shelf[APPNAME])
+try:
+    with open(config_filename, 'r') as config_file:
+        config = json.load(config_file)
+except FileNotFoundError as e:
+    print('Error: config file not found: {}'.format(e))
+    sys.exit(1)
+except ValueError as e:
+    print('Error: invalid config file "{}": {}'.format(config_filename, e))
+    sys.exit(1)
+telegram_bot_token = config.get('telegram_bot_token')
+if not telegram_bot_token:
+    print('Error: config file doesn\'t contain a `telegram_bot_token`')
+    sys.exit(1)
+authorized_users = config.get('authorized_users')
+if type(authorized_users) is not list or len(authorized_users) == 0:
+    print('Error: config file doesn\'t contain an `authorized_users` list')
+    sys.exit(1)
+cameras = config.get('cameras')
+if type(cameras) is not dict:
+    print('Error: config file doesn\'t define any `cameras`')
+    sys.exit(1)
+timeout_secs = config.get('timeout_secs', 10*60)
+upload_folder = config.get('image_folder', '/home/ftp-upload')
+event_handler = UploadDirectoryEventHandler(ignore_directories=True)
+observer = Observer()
+observer.schedule(event_handler, upload_folder, recursive=True)
+try:
+    observer.start()
+except OSError as e:
+    import pwd
+    print('ERROR: Cannot start observer. Make sure the folder {:s} exists and is writable for {:s}.'
+            .format(upload_folder, pwd.getpwuid(os.getuid()).pw_name))
+    sys.exit(1)
+path_to_ffmpeg = config.get('path_to_ffmpeg')
+max_photo_size = config.get('max_photo_size', TELEGRAM_MAX_PHOTO_DIMENSION)
+verbose = config.get('verbose', False)
+do_send_photos = config.get('send_photos', False)
+do_send_videos = config.get('send_videos', True)
+do_send_text = config.get('send_text', False)
+copy_to = config.get('copy_to', None)
+if isinstance(copy_to, str):
+    if not os.path.isdir(copy_to):
+        print('Error: {:s} (`copy_to`) doesn\'t point to a directory.'.format(copy_to))
+        sys.exit(1)
+    if not os.access(copy_to, os.W_OK):
+        print('Error: {:s} (`copy_to`) is not writable.'.format(copy_to))
+        sys.exit(1)
     if verbose:
-        print('Monitoring {} ...'.format(upload_folder))
-    scheduler.add_job(garbage_collector, 'cron', hour=0)
-    scheduler.add_job(mealtime, 'cron', hour='6,12,18,22', jitter=180)
-    scheduler.start()
-    send_msg_to_all('Botti wurde zum Leben erweckt und schiebt nun unaufhörlich Wache 👀')
-    try:
-        bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
-    except KeyboardInterrupt:
-        pass
+        print('All received surveillance files will be backed up to {:s}'.format(copy_to))
+
+max_text_file_size = config.get('max_text_file_size', 10 * TELEGRAM_MAX_MESSAGE_SIZE)
+do_send_documents = config.get('send_documents', False)
+audio_on = config.get('audio', {}).get('enabled', False)
+audio_volume = config.get('audio', {}).get('volume', 1.0)
+bot = telepot.DelegatorBot(telegram_bot_token, [
+    include_callback_query_chat_id(pave_event_space())(per_chat_id_in(authorized_users, types='private'),
+                                                        create_open,
+                                                        ChatUser,
+                                                        timeout=timeout_secs)
+])
+snapshot_queue = queue.Queue()
+snapshooter = threading.Thread(target=take_snapshot_thread)
+snapshooter.start()
+if do_send_text:
+    text_queue = queue.Queue()
+    text_processor = threading.Thread(target=process_text_thread)
+    text_processor.start()
     if verbose:
-        print('Exiting ...')
-    observer.stop()
-    observer.join()
-    shelf[APPNAME] = settings
-    shelf.sync()
-    shelf.close()
-    scheduler.shutdown()
-
-    snapshot_queue.put(None)
-    snapshooter.join()
-    if do_send_videos:
-        video_queue.put(None)
-        video_processor.join()
-    if do_send_photos:
-        photo_queue.put(None)
-        photo_processor.join()
-    if do_send_text:
-        text_queue.put(None)
-        text_processor.join()
-    if do_send_documents:
-        document_queue.put(None)
-        document_processor.join()
-    if audio_on:
-        voice_queue.put(None)
-        voice_processor.join()
-
-if __name__ == '__main__':
-    main()
+        print('Enabled text processing.')
+if do_send_documents:
+    document_queue = queue.Queue()
+    document_processor = threading.Thread(target=process_document_thread)
+    document_processor.start()
+    if verbose:
+        print('Enabled document processing.')
+if do_send_photos:
+    photo_queue = queue.Queue()
+    photo_processor = threading.Thread(target=process_photo_thread)
+    photo_processor.start()
+    if verbose:
+        print('Enabled photo processing.')
+if do_send_videos:
+    video_queue = queue.Queue()
+    video_processor = threading.Thread(target=process_video_thread)
+    video_processor.start()
+    if verbose:
+        print('Enabled video processing.')
+if audio_on:
+    try:
+        pygame.mixer.pre_init(frequency=TELEGRAM_AUDIO_BITRATE, size=-16, channels=2, buffer=4096)
+        pygame.mixer.init()
+    except:
+        print("\nWARNING: Cannot initialize audio.\n"
+                "*** See above warnings for details.\n"
+                "*** Consider deactivating audio in your \n"
+                "*** SurveillanceBot config file.\n")
+        audio_on = False
+    else:
+        voice_queue = queue.Queue()
+        voice_processor = threading.Thread(target=process_voice_thread)
+        voice_processor.start()
+        if verbose:
+            print('Enabled audio processing.')
+if verbose:
+    print('Monitoring {} ...'.format(upload_folder))
+scheduler.add_job(garbage_collector, 'cron', hour=0)
+scheduler.add_job(mealtime, 'cron', hour='6,12,18,22', jitter=180)
+scheduler.start()
+send_msg_to_all('Botti wurde zum Leben erweckt und schiebt nun unaufhörlich Wache 👀')
+if audio_on:
+    send_msg_to_all('Was du Botti sagst, ist ein, zwei Sekunden später über deine Lautsprecher zu hören.')
+try:
+    bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
+except KeyboardInterrupt:
+    pass
+if verbose:
+    print('Exiting ...')
+observer.stop()
+observer.join()
+shelf[APPNAME] = settings
+shelf.sync()
+shelf.close()
+scheduler.shutdown()
+snapshot_queue.put(None)
+snapshooter.join()
+if do_send_videos:
+    video_queue.put(None)
+    video_processor.join()
+if do_send_photos:
+    photo_queue.put(None)
+    photo_processor.join()
+if do_send_text:
+    text_queue.put(None)
+    text_processor.join()
+if do_send_documents:
+    document_queue.put(None)
+    document_processor.join()
+if audio_on:
+    voice_queue.put(None)
+    voice_processor.join()
