@@ -286,7 +286,8 @@ def gc_thread():
         garbage_collector()
 
 
-def trigger_gc()
+def trigger_gc(chat_id):
+    task.put({})
 
 
 def file_write_ok(filename, timeout_secs=5):
@@ -543,7 +544,8 @@ document_queue = None
 video_queue = None
 voice_queue = None
 photo_queue = None
-gc_queue = queue.Queue()
+gc_queue = None
+gc = None
 snapshooter = None
 text_processor = None
 document_processor = None
@@ -634,6 +636,9 @@ bot = telepot.DelegatorBot(telegram_bot_token, [
                                                         ChatUser,
                                                         timeout=timeout_secs)
 ])
+gc_queue = queue.Queue()
+gc = threading.Thread(target=gc_thread)
+gc.start()
 snapshot_queue = queue.Queue()
 snapshooter = threading.Thread(target=take_snapshot_thread)
 snapshooter.start()
@@ -697,6 +702,8 @@ shelf[APPNAME] = settings
 shelf.sync()
 shelf.close()
 scheduler.shutdown()
+gc_queue.put(None)
+gc_queue.join()
 snapshot_queue.put(None)
 snapshooter.join()
 if do_send_videos:
