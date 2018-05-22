@@ -5,11 +5,11 @@
 
 ---
 
-Copyright &copy; 2017 [Oliver Lau](mailto:ola@ct.de), [Heise Medien GmbH & Co. KG](http://www.heise.de/).
+Copyright &copy; 2017-2018 [Oliver Lau](mailto:ola@ct.de), [Heise Medien GmbH & Co. KG](http://www.heise.de/).
 
 Dieses Programm ist freie Software. Sie können es unter den Bedingungen der [GNU General Public License](http://www.gnu.org/licenses/gpl-3.0), wie von der Free Software Foundation veröffentlicht, weitergeben und/oder modifizieren, entweder gemäß Version 3 der Lizenz oder (nach Ihrer Wahl) jeder späteren Version.
 
-__Diese Software wurde zu Lehr- und Demonstrationszwecken programmiert und ist nicht für den produktiven Einsatz vorgesehen. Der Autor und die Heise Medien GmbH & Co. KG haften nicht für eventuelle Schäden, die aus der Nutzung der Software entstehen, und übernehmen keine Gewähr für ihre Vollständigkeit, Fehlerfreiheit und Eignung für einen bestimmten Zweck. Für weitere Infos lesen Sie bitte den Artikel [Sir Veillance, Mit Python Telegram-Bots programmieren, c't 9/17, S. 168](https://www.heise.de/ct/ausgabe/2017-9-Mit-Python-Telegram-Bots-programmieren-3677134.html).__
+__Diese Software wurde zu Lehr- und Demonstrationszwecken programmiert und ist nicht für den produktiven Einsatz vorgesehen. Der Autor und die Heise Medien GmbH & Co. KG haften nicht für eventuelle Schäden, die aus der Nutzung der Software entstehen, und übernehmen keine Gewähr für ihre Vollständigkeit, Fehlerfreiheit und Eignung für einen bestimmten Zweck. Für weitere Infos lesen Sie bitte den Artikel [Sir Veillance, Mit Python Telegram-Bots programmieren, c't 9/2017, S. 168](https://www.heise.de/ct/ausgabe/2017-9-Mit-Python-Telegram-Bots-programmieren-3677134.html).__
 
 ---
 

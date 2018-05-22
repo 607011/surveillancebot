@@ -59,11 +59,11 @@ class easydict(dict):
         return self[key]
 
 
-def send_msg_to_all(msg):
+def send_msg_to_all(msg, parse_mode='Markdown'):
     if isinstance(msg, str):
         while len(msg) > 0:
             for user in authorized_users:
-                bot.sendMessage(user, msg[:TELEGRAM_MAX_MESSAGE_SIZE])
+                bot.sendMessage(user, msg[:TELEGRAM_MAX_MESSAGE_SIZE], parse_mode)
             msg = msg[TELEGRAM_MAX_MESSAGE_SIZE:]
 
 
@@ -231,17 +231,17 @@ def mealtime():
     h = datetime.datetime.now().hour
     if h > 4 and h < 8:
         choice = random.choice(['🥐☕️', '🥓🍳', '🥚🥚🥚', '🥛🍪', '🍩🥛', '🥧🍵', '🥧☕️', '☕️🍰', '🥞🥓', '🍞🍯', '🍫'])
-        yell = 'Frühstück'
+        yell = 'Frühstück!'
     elif h < 14:
         choice = random.choice(['🥨', '🥘', '🥗', '🌯', '🍔🍟', '🌭', '🍝', '🥖🧀', '🥦🥔🥩', '🍖🍳', '🥪🥪', '🌮🍦', '🍕🍕🍕', '🍱🥠', '🍣🍜', '🍛', '🌶🌭'])
-        yell = 'Mittach'
+        yell = 'Mittach!'
     elif h < 20:
         choice = random.choice(['🧀🍞', '🥪', '🥪🥪', '🍕', '🌭', '🍗', '🍤🍙'])
-        yell = 'Lecker Abendbrot'
+        yell = 'Lecker Abendbrot!'
     else:
         choice = random.choice(['🍔🍺', '🥃', '🍸', '🍹', '🍻', '🥂', '🍷', '🍾', '🥜🍺'])
-        yell = None
-    send_msg_to_all('{}Ich hab Bock auf {}'.format(yell + '! ' if isinstance(yell, str) else '', choice))
+        yell = '🌚'
+    send_msg_to_all('{}Ich hab Bock auf {}'.format(yell + ' ' if isinstance(yell, str) else '', choice))
 
 
 def garbage_collector():
@@ -273,9 +273,20 @@ def garbage_collector():
         for dirname in subdirs:
             total_dirs_deleted += delete_too_old(os.path.join(root, dirname))
     if total_files_deleted == 0 and total_dirs_deleted == 0:
-        send_msg_to_all('Bottie hat keine Dateien im Upload-Folder gefunden, die älter als {} Tage sind.'.format(gc_after_days))    
+        send_msg_to_all('Botti hat keine Dateien im Upload-Folder gefunden, die älter als {} Tage sind.'.format(gc_after_days))    
     else:
-        send_msg_to_all('Bottie hat {} Dateien und {} Verzeichnisse aus dem Upload-Folder gelöscht, die älter als {} Tage waren.'.format(total_files_deleted, total_dirs_deleted, gc_after_days))    
+        send_msg_to_all('Botti hat {} Dateien und {} Verzeichnisse aus dem Upload-Folder gelöscht, die älter als {} Tage waren.'.format(total_files_deleted, total_dirs_deleted, gc_after_days))    
+
+
+def gc_thread():
+    while True:
+        task = gc_queue.get()
+        if task is None:
+            break
+        garbage_collector()
+
+
+def trigger_gc()
 
 
 def file_write_ok(filename, timeout_secs=5):
@@ -351,12 +362,6 @@ class UploadDirectoryEventHandler(FileSystemEventHandler):
 
 class ChatUser(telepot.helper.ChatHandler):
 
-    IdleMessages = ['tüdelü …', '*gähn*', 'Mir ist langweilig.', 'Chill dein Life! Alles cool hier.',
-                    'Hier ist tote Hose.', 'Nix los hier …', 'Scheint niemand zu Hause zu sein.',
-                    'Sanft ruht der See.', 'Hallo-o!!!', 'Alles cool, Digga.', 'Ich kuck und kuck, aber nix passiert.',
-                    'Das Adlerauge ist wachsam, sieht aber nüscht.', 'Nix tut sich.',
-                    'Mach du dein Ding. Ich mach hier meins.', 'Alles voll secure in da house.']
-
     def __init__(self, *args, **kwargs):
         super(ChatUser, self).__init__(*args, **kwargs)
         self.snapshot_job = None
@@ -384,8 +389,11 @@ class ChatUser(telepot.helper.ChatHandler):
 
     def on__idle(self, event):
         if alerting_on:
-            ridx = random.randint(0, len(ChatUser.IdleMessages) - 1)
-            self.sender.sendMessage(ChatUser.IdleMessages[ridx], parse_mode='Markdown')
+            self.sender.sendMessage(random.choice(['tüdelü …', '*gähn*', 'Mir ist langweilig.', 'Chill dein Life! Alles cool hier.',
+                    'Hier ist tote Hose.', 'Nix los hier …', 'Scheint niemand zu Hause zu sein.',
+                    'Sanft ruht der See.', 'Hallo-o!!!', 'Alles cool, Digga.', 'Ich kuck und kuck, aber nix passiert.',
+                    'Das Adlerauge ist wachsam, sieht aber nüscht.', 'Nix tut sich.',
+                    'Mach du dein Ding. Ich mach hier meins.', 'Alles voll secure in da house.']), parse_mode='Markdown')
 
     def send_snapshot_menu(self):
         kbd = [ InlineKeyboardButton(text=cameras[c]['name'], callback_data=c)
@@ -535,6 +543,7 @@ document_queue = None
 video_queue = None
 voice_queue = None
 photo_queue = None
+gc_queue = queue.Queue()
 snapshooter = None
 text_processor = None
 document_processor = None
@@ -671,11 +680,11 @@ if audio_on:
 if verbose:
     print('Monitoring {} ...'.format(upload_folder))
 scheduler.add_job(garbage_collector, 'cron', hour=0)
-scheduler.add_job(mealtime, 'cron', hour='6,12,18,22', jitter=180)
+scheduler.add_job(mealtime, 'cron', hour='6,12,18,22')
 scheduler.start()
-send_msg_to_all('Botti wurde zum Leben erweckt und schiebt nun unaufhörlich Wache 👀')
+send_msg_to_all('Botti 🤖 wurde zum Leben erweckt und schiebt nun unaufhörlich Wache 👀👮🏻‍️‍')
 if audio_on:
-    send_msg_to_all('Was du Botti sagst, ist ein, zwei Sekunden später über deine Lautsprecher zu hören.')
+    send_msg_to_all('Was du Botti sagst 🗣, ist ein, zwei Sekunden später über deine Lautsprecher 📢📢 zu hören.')
 try:
     bot.message_loop(run_forever='Bot listening ... (Press Ctrl+C to exit.)')
 except KeyboardInterrupt:

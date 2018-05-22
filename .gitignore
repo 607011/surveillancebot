@@ -5,3 +5,4 @@ ffmpeg
 sample.*
 samples/*
 .DS_Store
+._*
