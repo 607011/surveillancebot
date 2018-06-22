@@ -471,7 +471,7 @@ class ChatUser(telepot.helper.ChatHandler):
                                         "Schnappschüsse von den Kameras abgerufen und angezeigt werden sollen\n"
                                         "/snapshot `interval` `secs` Schnappschussintervall auf `secs` Sekunden "
                                         "setzen (`0` für aus)\n"
-                                        "/uptime Uptime anzeigen\n",
+                                        "/uptime Uptime anzeigen\n"
                                         "/start den Bot (neu)starten\n",
                                         parse_mode='Markdown')
             elif msg_text.startswith('/'):
